@@ -457,7 +457,7 @@ button:disabled {
 }
 
 .phase-uploading .queue-phase {
-  color: #229ed9;
+  color: #666666;
 }
 
 .status-error .queue-phase {
@@ -465,7 +465,7 @@ button:disabled {
 }
 
 .phase-downloading .queue-phase {
-  color: #229ed9;
+  color: #666666;
 }
 
 .status-error .queue-item-delete {

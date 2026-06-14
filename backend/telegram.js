@@ -2,6 +2,8 @@ import { AppError, Err } from "./errors.js";
 
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 const TELEGRAM_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+const TELEGRAM_UPLOAD_RETRIES = Math.max(0, Number(process.env.TELEGRAM_UPLOAD_RETRIES || 2));
+const TELEGRAM_RETRY_BASE_DELAY_MS = 1200;
 
 /** Verify a Telegram chat exists and the bot has access. Throws on failure. */
 export async function validateTelegramChat(botToken, chatId, signal) {
@@ -44,7 +46,7 @@ export async function sendTelegramMessage(botToken, chatId, text, signal) {
     text,
     parse_mode: "HTML",
     disable_web_page_preview: false
-  });
+  }, signal);
 }
 
 /** Call a Telegram Bot API JSON method. */
@@ -66,38 +68,130 @@ async function callTelegram(botToken, method, body, signal) {
 export async function callTelegramMultipart(botToken, method, body, options = {}) {
   const cancelSignal = isAbortSignal(options) ? options : options?.signal;
   const onUploadProgress = isAbortSignal(options) ? null : options?.onUploadProgress;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TELEGRAM_UPLOAD_TIMEOUT_MS);
-  if (cancelSignal?.aborted) controller.abort();
-  else cancelSignal?.addEventListener?.("abort", () => { clearTimeout(timeoutId); controller.abort(); });
-  const multipart = createMultipartBody(body, onUploadProgress);
-  const response = await fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": multipart.contentType,
-      "Content-Length": String(multipart.contentLength)
-    },
-    body: multipart.body,
-    duplex: "half",
-    signal: controller.signal
-  }).catch((error) => {
-    if (error?.name === "AbortError") {
-      throw new AppError(Err.UPLOAD_TIMEOUT, "Telegram upload timed out. Check the network or video file size and try again.");
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= TELEGRAM_UPLOAD_RETRIES; attempt += 1) {
+    throwIfAborted(cancelSignal);
+
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, TELEGRAM_UPLOAD_TIMEOUT_MS);
+    const abortUpload = () => {
+      clearTimeout(timeoutId);
+      controller.abort();
+    };
+    cancelSignal?.addEventListener?.("abort", abortUpload, { once: true });
+
+    try {
+      const multipart = createMultipartBody(body, onUploadProgress);
+      const response = await fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": multipart.contentType,
+          "Content-Length": String(multipart.contentLength)
+        },
+        body: multipart.body,
+        duplex: "half",
+        signal: controller.signal
+      });
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.ok) {
+        if (shouldRetryTelegramResponse(response, attempt)) {
+          lastError = new AppError(Err.TELEGRAM_API_ERROR, `Telegram API call failed: ${data?.description || `${response.status} ${response.statusText}`}`);
+          await waitForRetry(attempt, cancelSignal);
+          continue;
+        }
+
+        throw new AppError(Err.TELEGRAM_API_ERROR, `Telegram API call failed: ${data?.description || `${response.status} ${response.statusText}`}`);
+      }
+      return data.result;
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        if (cancelSignal?.aborted && !timedOut) {
+          throw new AppError(Err.CANCELLED, "Task cancelled by user.");
+        }
+
+        throw new AppError(Err.UPLOAD_TIMEOUT, "Telegram upload timed out. Check the network or video file size and try again.");
+      }
+
+      if (error instanceof AppError) {
+        throw error;
+      }
+
+      if (isRetryableUploadError(error) && attempt < TELEGRAM_UPLOAD_RETRIES) {
+        lastError = error;
+        await waitForRetry(attempt, cancelSignal);
+        continue;
+      }
+
+      throw new AppError(Err.TELEGRAM_API_ERROR, `Telegram upload failed: ${describeUploadError(error)}`);
+    } finally {
+      clearTimeout(timeoutId);
+      cancelSignal?.removeEventListener?.("abort", abortUpload);
     }
-
-    throw error;
-  }).finally(() => clearTimeout(timeoutId));
-
-  const data = await response.json().catch(() => null);
-  if (!response.ok || !data?.ok) {
-    throw new AppError(Err.TELEGRAM_API_ERROR, `Telegram API call failed: ${data?.description || `${response.status} ${response.statusText}`}`);
   }
-  return data.result;
+
+  throw new AppError(Err.TELEGRAM_API_ERROR, `Telegram upload failed: ${describeUploadError(lastError)}`);
 }
 
 /** Check if a value is an AbortSignal instance (cross-realm compatible). */
 function isAbortSignal(value) {
   return value && typeof value === "object" && typeof value.aborted === "boolean" && typeof value.addEventListener === "function";
+}
+
+/** Throw a cancellation error if the caller has already aborted the upload. */
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    throw new AppError(Err.CANCELLED, "Task cancelled by user.");
+  }
+}
+
+/** Return true for Telegram responses that are normally safe to retry. */
+function shouldRetryTelegramResponse(response, attempt) {
+  if (attempt >= TELEGRAM_UPLOAD_RETRIES) {
+    return false;
+  }
+
+  return response?.status === 429 || (response?.status >= 500 && response?.status <= 599);
+}
+
+/** Return true for transient network failures seen during streaming uploads. */
+function isRetryableUploadError(error) {
+  const code = error?.cause?.code || error?.code;
+  return error?.name === "TypeError" ||
+    code === "UND_ERR_SOCKET" ||
+    code === "ECONNRESET" ||
+    code === "EPIPE" ||
+    code === "ETIMEDOUT" ||
+    code === "ECONNREFUSED";
+}
+
+/** Wait before retrying an upload, while still honoring cancellation. */
+function waitForRetry(attempt, signal) {
+  const delay = TELEGRAM_RETRY_BASE_DELAY_MS * (2 ** attempt);
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new AppError(Err.CANCELLED, "Task cancelled by user."));
+      return;
+    }
+
+    const timeoutId = setTimeout(resolve, delay);
+    signal?.addEventListener?.("abort", () => {
+      clearTimeout(timeoutId);
+      reject(new AppError(Err.CANCELLED, "Task cancelled by user."));
+    }, { once: true });
+  });
+}
+
+/** Format nested undici/network errors without leaking the whole stack to clients. */
+function describeUploadError(error) {
+  const message = error?.cause?.message || error?.message || String(error || "unknown error");
+  const code = error?.cause?.code || error?.code || "";
+  return code ? `${message} (${code})` : message;
 }
 
 /** Build a multipart/form-data body from a FormData object with optional upload progress callback. */

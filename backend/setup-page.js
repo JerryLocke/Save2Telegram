@@ -12,9 +12,31 @@ export function resolveSetupLocale(req, requestedLocale) {
   if (requestedLocale) return normalizeSetupLocale(requestedLocale);
   const cookie = (req.headers.cookie || "").match(/locale=([^;]+)/);
   if (cookie) return normalizeSetupLocale(cookie[1]);
-  const acceptLang = req.headers["accept-language"] || "";
-  if (acceptLang.startsWith("zh")) return "zh_CN";
+  const acceptLang = parseAcceptLanguage(req.headers["accept-language"] || "");
+  for (const lang of acceptLang) {
+    const normalized = normalizeSetupLocale(lang);
+    if (normalized !== "en") return normalized;
+  }
   return "en";
+}
+
+/** Parse Accept-Language header into an ordered list of language tags, respecting quality values. */
+function parseAcceptLanguage(header) {
+  const tags = [];
+  for (const part of header.split(",")) {
+    const [tag, q] = part.trim().split(";");
+    const lang = (tag || "").trim();
+    if (!lang) continue;
+    const quality = q ? parseFloat(q.replace(/^q\s*=\s*/, "")) : 1;
+    if (isNaN(quality)) continue;
+    tags.push({ lang: lang.replace(/-/g, "_"), quality });
+    // Also add the primary language subtag for broader matching (e.g. "zh" from "zh_CN")
+    const primary = lang.split("-")[0].replace(/_/g, "");
+    if (primary && primary !== lang) {
+      tags.push({ lang: primary, quality: quality * 0.99 });
+    }
+  }
+  return tags.sort((a, b) => b.quality - a.quality).map((t) => t.lang);
 }
 
 /** Render the full setup page HTML. */
@@ -45,7 +67,7 @@ export function renderSetupPage(endpointUrl, extensionId, locale = "en", hasSecr
       .status.ok { color: #22c55e; }
       .status.err { color: #ef4444; }
       button { width: 100%; padding: 12px; border-radius: 8px; border: none; font-size: 16px; cursor: pointer; }
-      button.primary { background: #1d9bf0; color: #fff; }
+      button.primary { background: #229ed9; color: #fff; }
       button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
       button.secondary { background: #e5e5e5; color: #333; margin-top: 8px; }
       .note { margin-top: 20px; font-size: 12px; color: #999; }
@@ -57,10 +79,10 @@ export function renderSetupPage(endpointUrl, extensionId, locale = "en", hasSecr
       <p class="url">${endpointUrl}</p>
       <p id="status" class="status"></p>
       <button id="setup-btn" class="primary" onclick="setupEndpoint()">${msg.useEndpoint}</button>
-      ""
     </div>
-    ""
     <script>
+    ${extensionCheckScript}
+    ${hasSecretScript}
     async function setupEndpoint() {
       const btn = document.getElementById("setup-btn");
       const status = document.getElementById("status");
@@ -69,13 +91,6 @@ export function renderSetupPage(endpointUrl, extensionId, locale = "en", hasSecr
       status.textContent = "";
 
       try {
-        if (window.__EXTENSION_ID__ && !window.chrome?.runtime?.id) {
-          const el = document.createElement("a");
-          el.href = "https://chrome.google.com/webstore/detail/" + encodeURIComponent(window.__EXTENSION_ID__);
-          el.rel = "chrome-webstore-item";
-          el.click();
-        }
-
         const keyRes = await fetch("./api/keys", {
           method: "POST",
           headers: window.__SETUP_SECRET__
@@ -93,34 +108,24 @@ export function renderSetupPage(endpointUrl, extensionId, locale = "en", hasSecr
           const response = await chrome.runtime.sendMessage({
             type: "SET_FORWARD_ENDPOINT",
             endpointUrl: window.location.origin,
-            endpointKey: key
+            key: key
           });
           if (!response?.ok) throw new Error(response?.error || "${msg.setupFailed}");
-          status.textContent = "${msg.setupFailed}";
+          status.textContent = "${msg.setupDone}";
           status.className = "status ok";
         } else if (window.__EXTENSION_ID__) {
           // Try extension messaging API
-          try {
-            const extId = window.__EXTENSION_ID__;
-            const response = await chrome.runtime.sendMessage(extId, {
-              type: "SET_FORWARD_ENDPOINT",
-              endpointUrl: window.location.origin,
-              endpointKey: key
-            });
-            if (!response?.ok) throw new Error(response?.error || "${msg.setupFailed}");
-            status.textContent = "${msg.setupFailed}";
-            status.className = "status ok";
-          } catch (extError) {
-            // Copy the key to clipboard as fallback
-            await navigator.clipboard.writeText(JSON.stringify({ endpointUrl: window.location.origin, endpointKey: key }));
-            status.textContent = "API key copied to clipboard. Paste it into the extension settings.";
-            status.className = "status ok";
-          }
-        } else {
-          // No extension context - copy key to clipboard
-          await navigator.clipboard.writeText(JSON.stringify({ endpointUrl: window.location.origin, endpointKey: key }));
-          status.textContent = "API key copied to clipboard. Paste it into the extension settings.";
+          const extId = window.__EXTENSION_ID__;
+          const response = await chrome.runtime.sendMessage(extId, {
+            type: "SET_FORWARD_ENDPOINT",
+            endpointUrl: window.location.origin,
+            key: key
+          });
+          if (!response?.ok) throw new Error(response?.error || "${msg.setupFailed}");
+          status.textContent = "${msg.setupDone}";
           status.className = "status ok";
+        } else {
+          throw new Error("Extension not found. Please install the Save2Telegram extension first.");
         }
       } catch (error) {
         status.textContent = error.message || "${msg.setupFailed}";

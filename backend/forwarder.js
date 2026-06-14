@@ -126,15 +126,13 @@ async function sendSingleAlbumItem(botToken, chatId, item, caption, form, job = 
     return sendTelegramPhoto(botToken, chatId, item.media, caption);
   }
 
-  const signal = job?.abortController?.signal;
-  if (item.type === "photo") return sendTelegramPhoto(botToken, chatId, item.media, caption, signal);
   const attachName = item.media.replace("attach://", "");
   const file = form.get(attachName);
   return sendTelegramVideoFile(botToken, chatId, {
     blob: file,
     filename: file?.name || "twitter-video.mp4"
   }, caption, {
-    signal,
+    signal: job?.abortController?.signal,
     onUploadProgress: createJobUploadProgress(job)
   });
 }

@@ -91,7 +91,7 @@ export async function streamForward(res, payload, telegram, forwardEndpoint, uid
     console.error("Forward stream failed:", error);
     updateJob(job, {
       status: "error",
-      error: error.message || String(error),
+      error: error instanceof AppError ? error : new AppError(Err.UNKNOWN, error.message || String(error)),
       completedAt: Date.now()
     });
     sendSse(res, "error", { ok: false, error: job.error, job: serializeJob(job) });

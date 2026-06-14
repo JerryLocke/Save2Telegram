@@ -105,7 +105,6 @@ server.listen(PORT, HOST, () => {
   console.info(`Save2Telegram setup URL: ${setupUrl}`);
 });
 /** Render a simple 404 HTML page. */
-/** Render a simple 404 HTML page. */
 function renderNotFoundPage() {
   return `<!doctype html>
 <html lang="en">

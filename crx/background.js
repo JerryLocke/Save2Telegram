@@ -18,7 +18,10 @@ importScripts('lib/i18n.js');
   const MAX_CAPTURED_VIDEO_URLS_PER_TAB = 80;
   const TELEGRAM_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
   const FORWARD_ENDPOINT_BINDING_TIMEOUT_MS = 2 * 60 * 1000;
+  const MAX_CONCURRENT_FORWARD_TASKS = 3;
   let queueProcessingPromise = null;
+  let queueUpdatePromise = Promise.resolve();
+  const activeQueueItemIds = new Set();
   const capturedVideoUrlsByTab = new Map();
   const pendingForwardEndpointBindings = new Map();
   // ==================== Architecture ====================
@@ -340,7 +343,7 @@ importScripts('lib/i18n.js');
         url: chrome.runtime.getURL(`confirm.html?requestId=${encodeURIComponent(requestId)}`),
         type: "popup",
         width: 420,
-        height: 340,
+        height: 350,
         focused: true
       });
       binding.windowId = popup?.id || null;
@@ -590,7 +593,7 @@ importScripts('lib/i18n.js');
     }
     return updateQueue((q) => q.filter((entry) => entry.id !== id));
   }
-  /** Ensure the queue processing loop is running (singleton). */
+  /** Ensure the queue scheduler is running (singleton). */
   async function processQueue() {
     if (queueProcessingPromise) {
       return queueProcessingPromise;
@@ -600,55 +603,77 @@ importScripts('lib/i18n.js');
     });
     return queueProcessingPromise;
   }
-  /** Process all pending queue items sequentially until the queue is empty. */
+  /** Start pending queue items up to the configured concurrency limit. */
   async function drainQueue() {
-    await updateQueue((queue) => queue.map((item) => (
-      item.status === "sending" ? { ...item, status: "pending", updatedAt: Date.now() } : item
-    )));
-    while (true) {
+    if (!activeQueueItemIds.size) {
+      await updateQueue((queue) => queue.map((item) => (
+        item.status === "sending" ? { ...item, status: "pending", updatedAt: Date.now() } : item
+      )));
+    }
+
+    while (activeQueueItemIds.size < MAX_CONCURRENT_FORWARD_TASKS) {
       const queue = await getQueue();
-      const item = queue.find((entry) => entry.status === "pending");
+      const item = queue.find((entry) => entry.status === "pending" && !activeQueueItemIds.has(entry.id));
       if (!item) {
         break;
       }
-      await markQueueItem(item.id, {
+      activeQueueItemIds.add(item.id);
+      runQueueItem(item)
+        .catch((error) => debugError(item.id, "Queue item runner failed", error))
+        .finally(() => {
+          activeQueueItemIds.delete(item.id);
+          processQueue();
+        });
+    }
+  }
+  /** Process one queue item. Multiple instances may run in parallel. */
+  async function runQueueItem(item) {
+    const attempt = (item.attempts || 0) + 1;
+    const claimedQueue = await updateQueue((queue) => queue.map((entry) => (
+      entry.id === item.id && entry.status === "pending" ? {
+        ...entry,
         status: "sending",
-        attempts: (item.attempts || 0) + 1,
+        attempts: attempt,
         progress: 0,
         phaseProgress: 0,
         phase: "downloading",
         bytesLoaded: 0,
         bytesTotal: 0,
         lastError: "",
-        debugLog: appendDebugLog(item.debugLog, `Processing, attempt ${(item.attempts || 0) + 1}`),
+        debugLog: appendDebugLog(entry.debugLog, `Processing, attempt ${attempt}`),
         updatedAt: Date.now()
-      });
-      try {
-        const endpoint = await createForwardEndpoint();
-        await endpoint.forward(item.payload, item.id, item.telegramConfigId);
-        debugLog(item.id, "Queue item sent; marking as sent");
-        if ((await getGeneralSettings()).keepCompletedItems) {
-          await markQueueItem(item.id, {
-            status: "sent",
-            phase: "sent",
-            progress: 100,
-            phaseProgress: 100,
-            lastError: "",
-            updatedAt: Date.now()
-          });
-          await trimCompletedQueueItems((await getGeneralSettings()).maxCompletedItems);
-        } else {
-          await removeQueueItem(item.id);
-        }
-      } catch (error) {
-        debugError(item.id, "Queue item failed", error);
-        await appendQueueDebugLog(item.id, `Failed: ${error.message || String(error)}`);
-        await markQueueItem(item.id, {
-          status: "error",
-          lastError: error.message || String(error),
+      } : entry
+    )));
+    const claimedItem = claimedQueue.find((entry) => entry.id === item.id);
+    if (!claimedItem || claimedItem.status !== "sending" || claimedItem.attempts !== attempt) {
+      return;
+    }
+
+    try {
+      const endpoint = await createForwardEndpoint();
+      await endpoint.forward(claimedItem.payload, claimedItem.id, claimedItem.telegramConfigId);
+      debugLog(claimedItem.id, "Queue item sent; marking as sent");
+      if ((await getGeneralSettings()).keepCompletedItems) {
+        await markQueueItem(claimedItem.id, {
+          status: "sent",
+          phase: "sent",
+          progress: 100,
+          phaseProgress: 100,
+          lastError: "",
           updatedAt: Date.now()
         });
+        await trimCompletedQueueItems((await getGeneralSettings()).maxCompletedItems);
+      } else {
+        await removeQueueItem(claimedItem.id);
       }
+    } catch (error) {
+      debugError(claimedItem.id, "Queue item failed", error);
+      await appendQueueDebugLog(claimedItem.id, `Failed: ${error.message || String(error)}`);
+      await markQueueItem(claimedItem.id, {
+        status: "error",
+        lastError: error.message || String(error),
+        updatedAt: Date.now()
+      });
     }
   }
   /** Read the full forward queue from chrome.storage.local. */
@@ -662,11 +687,15 @@ importScripts('lib/i18n.js');
   }
   /** Atomically update the queue: read, apply updater function, write back. */
   async function updateQueue(updater) {
-    const queue = await getQueue();
-    const nextQueue = updater(queue);
-    await chrome.storage.local.set({ [QUEUE_KEY]: nextQueue });
-    await updateQueueBadge(nextQueue);
-    return nextQueue;
+    const operation = queueUpdatePromise.catch(() => { }).then(async () => {
+      const queue = await getQueue();
+      const nextQueue = updater(queue);
+      await chrome.storage.local.set({ [QUEUE_KEY]: nextQueue });
+      await updateQueueBadge(nextQueue);
+      return nextQueue;
+    });
+    queueUpdatePromise = operation.catch(() => { });
+    return operation;
   }
   async function clearCompletedQueueItems() {
     return updateQueue((queue) => queue.filter((item) => item.status !== "sent"));
@@ -696,9 +725,15 @@ importScripts('lib/i18n.js');
   }
   /** Apply a partial update to a queue item in storage. */
   async function markQueueItem(id, patch) {
-    return updateQueue((queue) => queue.map((item) => (
+    await updateQueue((queue) => queue.map((item) => (
       item.id === id ? { ...item, ...patch } : item
     )));
+    if (patch.status === "sent") {
+      const settings = await getGeneralSettings();
+      if (settings.keepCompletedItems) {
+        await trimCompletedQueueItems(settings.maxCompletedItems);
+      }
+    }
   }
   /** Append a debug log entry to a queue item. */
   async function appendQueueDebugLog(id, message) {

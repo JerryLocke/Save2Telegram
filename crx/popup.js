@@ -904,7 +904,7 @@
     subLine1.textContent = [
       item.telegramConfigLabel || "",
       formatTime(item.createdAt)
-    ].filter(Boolean).join(" 路 ");
+    ].filter(Boolean).join(" · ");
 
     const subLine2 = document.createElement("span");
     subLine2.className = "queue-sub-line";
@@ -933,6 +933,7 @@
       percent.setAttribute("aria-label", Save2TG.I18n.t("popup_retry"));
     } else {
       percent.textContent = `${getProgress(item)}%`;
+      percent.classList.toggle("hidden", !shouldShowQueuePercent(item));
     }
 
     const deleteBtn = createQueueRemoveButton(item);
@@ -957,6 +958,7 @@
     const percent = article.querySelector(".queue-percent:not(.retry-inline)");
     if (percent) {
       percent.textContent = `${getProgress(item)}%`;
+      percent.classList.toggle("hidden", !shouldShowQueuePercent(item));
     }
 
     const removeBtn = article.querySelector(".queue-item-delete");
@@ -998,7 +1000,7 @@
     ].filter(Boolean);
 
     if (details.length) {
-      element.append(document.createTextNode(details.join(" 路 ")));
+      element.append(document.createTextNode(details.join(" · ")));
     }
 
     if (item.status === "error" && item.lastError) {
@@ -1252,6 +1254,11 @@
       mediaItems.find((media) => media.type === "photo" && media.url);
 
     return thumbnailItem?.thumbnail || thumbnailItem?.url || "";
+  }
+
+  /** Return whether the queue item has meaningful phase progress to show. */
+  function shouldShowQueuePercent(item) {
+    return item.status === "sending" && (item.phase === "downloading" || item.phase === "uploading");
   }
 
   /** Get the current progress percentage for a queue item. */
