@@ -1,0 +1,1136 @@
+﻿* {
+  box-sizing: border-box;
+}
+
+body {
+  --tooltip-bg: #1f2329;
+  --tooltip-color: #ffffff;
+  --tooltip-radius: 4px;
+  --tooltip-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  --tooltip-font-size: 11px;
+  --tooltip-line-height: 1.5;
+  --tooltip-padding: 6px 10px;
+  --tooltip-anchor-gap: 6px;
+  --tooltip-arrow-size: 6px;
+  --tooltip-arrow-half-width: 5px;
+  --tooltip-popup-gutter: 14px;
+  width: 320px;
+  margin: 0;
+  background: #ffffff;
+  color: #333333;
+  font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+main {
+  background: #ffffff;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  column-gap: 6px;
+  padding: 6px 12px;
+  background: #229ed9;
+  color: #ffffff;
+}
+
+strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button {
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+.settings-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 3px;
+  border-radius: 4px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  line-height: 1;
+}
+
+.settings-button svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+.settings-button:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
+.hidden {
+  display: none;
+}
+
+.queue-list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-height: 300px;
+  /* Tooltips open upward without adding layout space. Horizontal overflow
+   * stays clipped for paged slides; vertical overflow must remain visible
+   * so the first failed item is not cut off or forced to open downward. */
+  overflow-x: clip;
+  overflow-y: visible;
+}
+
+/* WARNING: .queue-track uses transform for sliding. This makes
+   position:fixed inside the track relative to the track's transform
+   container, NOT the viewport. Any tooltip inside the track MUST
+   use track-relative coordinates (see syncQueueTooltipAnchors).
+   If you change this selector, the transform string, or add another
+   transform ancestor, you MUST also update the tooltip coordinate
+   calculations to match. */
+.queue-track {
+  display: flex;
+  align-items: flex-start;
+  transition: transform 280ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  will-change: transform;
+}
+
+.queue-track.dragging {
+  transition: none;
+}
+
+/* NOTE: .queue-page carries padding so the clip container
+   (.queue-list) can be padding-free. This ensures translateX(-100%)
+   slides exactly one viewport width with no gap bleed-through. */
+.queue-page {
+  flex: 0 0 100%;
+  min-width: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 12px 10px;
+}
+
+.queue-pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 0 12px 6px;
+}
+
+.queue-pagination.hidden {
+  display: none;
+}
+
+.queue-dot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.queue-dot::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d9d9d9;
+  transition: background 0.15s, transform 0.15s;
+}
+
+.queue-dot:hover::before {
+  background: #bfbfbf;
+}
+
+.queue-dot.active::before {
+  background: #229ed9;
+  transform: scale(1.15);
+}
+
+.queue-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 4px;
+  background: #f5f5f5;
+}
+
+#header-main .queue-tabs {
+  flex: 0 0 auto;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+#header-main .settings-button {
+  margin-left: auto;
+}
+
+.queue-tab {
+  border: 0;
+  border-radius: 3px;
+  padding: 2px 10px;
+  background: transparent;
+  color: #888888;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+#header-main .queue-tab {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.queue-tab:hover {
+  color: #333333;
+}
+
+#header-main .queue-tab:hover {
+  color: #ffffff;
+}
+
+.queue-tab.active {
+  background: #ffffff;
+  color: #0058ff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+#header-main .queue-tab.active {
+  color: #229ed9;
+}
+
+.queue-empty {
+  margin: 0;
+  padding: 20px 12px;
+  color: #cccccc;
+  font-size: 11px;
+  text-align: center;
+}
+
+.queue-empty.error {
+  color: #ff4d4f;
+}
+
+.queue-item {
+  position: relative;
+  --progress: 0%;
+  --progress-color: rgba(0, 88, 255, 0.08);
+  --accent-color: #0058ff;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 42px;
+  align-items: center;
+  column-gap: 6px;
+  min-height: 44px;
+  padding: 4px 0;
+  cursor: default;
+  background:
+    linear-gradient(90deg, var(--progress-color) 0 var(--progress), transparent var(--progress) 100%),
+    #ffffff;
+  transition: background-color 0.12s;
+}
+
+.queue-item+.queue-item {
+  border-top: 1px solid #f0f0f0;
+}
+
+.queue-item:hover {
+  background:
+    linear-gradient(90deg, var(--progress-color) 0 var(--progress), transparent var(--progress) 100%),
+    rgba(0, 0, 0, 0.02);
+}
+
+.queue-item:hover .queue-status {
+  align-items: center;
+  justify-content: center;
+}
+
+.queue-item:hover .queue-info-bottom {
+  justify-content: center;
+}
+
+.queue-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #dfe4e9;
+  color: #0058ff;
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.queue-icon:hover {
+  filter: brightness(0.96);
+}
+
+.queue-icon img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.queue-main {
+  min-width: 0;
+}
+
+.queue-title {
+  display: block;
+  overflow: hidden;
+  margin: -1px -3px;
+  padding: 1px 3px;
+  border-radius: 3px;
+  color: #333333;
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.queue-title:hover {
+  color: #000000;
+  text-decoration: none;
+}
+
+.queue-sub-line {
+  display: block;
+  overflow: hidden;
+  color: #999999;
+  font-size: 10px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-sub-line+.queue-sub-line {
+  margin-top: 1px;
+}
+
+.queue-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.queue-info-bottom {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 16px;
+}
+
+.queue-phase {
+  overflow: hidden;
+  color: #666666;
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.queue-percent {
+  overflow: hidden;
+  color: var(--accent-color);
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  text-align: center;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.queue-item:hover .queue-phase,
+.queue-item:hover .queue-percent:not(.retry-inline) {
+  display: none;
+}
+
+.retry-inline {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 2px;
+  border: 0;
+  border-radius: 50%;
+  background: #e0e0e0;
+  color: #757575;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.retry-inline svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.queue-item:hover .retry-inline {
+  display: inline-flex;
+}
+
+.retry-inline:hover {
+  background: #666666;
+  color: #fff;
+}
+
+.queue-item-delete {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 2px;
+  border: 0;
+  border-radius: 50%;
+  background: #e0e0e0;
+  color: #757575;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+}
+
+.queue-item-delete svg {
+  display: block;
+  width: 10px;
+  height: 10px;
+}
+
+.queue-item:hover .queue-item-delete {
+  display: inline-flex;
+}
+
+.queue-item-delete:hover {
+  background: #666666;
+  color: #fff;
+}
+
+.status-pending {
+  --progress-color: rgba(153, 153, 153, 0.08);
+  --accent-color: #999999;
+  background:
+    linear-gradient(90deg, var(--progress-color) 0 var(--progress), transparent var(--progress) 100%),
+    #ffffff;
+}
+
+.phase-downloading {
+  --progress-color: rgba(0, 88, 255, 0.08);
+  --accent-color: #229ed9;
+}
+
+.phase-uploading {
+  --progress-color: rgba(34, 158, 217, 0.12);
+  --accent-color: #229ed9;
+}
+
+.phase-uploading .queue-phase {
+  color: #229ed9;
+}
+
+.status-error .queue-phase {
+  display: none;
+}
+
+.phase-downloading .queue-phase {
+  color: #229ed9;
+}
+
+.status-error .queue-item-delete {
+  display: none !important;
+}
+
+.status-error {
+  --progress-color: rgba(255, 77, 79, 0.08);
+  --accent-color: #ff4d4f;
+  background:
+    linear-gradient(90deg, var(--progress-color) 0 var(--progress), transparent var(--progress) 100%),
+    #ffffff;
+}
+
+.status-error .queue-percent:not(.retry-inline) {
+  color: #ff4d4f;
+}
+
+.status-sent {
+  --progress-color: transparent;
+  --accent-color: #999999;
+}
+
+.status-sent .queue-percent {
+  display: none;
+}
+
+.queue-done-label {
+  display: inline-block;
+  margin-left: 5px;
+  color: #52c41a;
+  line-height: inherit;
+  vertical-align: baseline;
+}
+
+.settings-view {
+  padding: 12px;
+}
+
+.settings-section {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-section+.settings-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.settings-section h2 {
+  margin: 0 0 3px;
+  color: #333333;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.settings-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 22px;
+}
+
+.settings-section-header h2 {
+  margin: 0;
+}
+
+.section-add-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  padding: 2px;
+  border-radius: 4px;
+  background: transparent;
+  color: #229ed9;
+}
+
+.section-add-button svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.section-add-button:hover {
+  background: rgba(34, 158, 217, 0.1);
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 18px;
+}
+
+.settings-row.hidden {
+  display: none;
+}
+
+.settings-label {
+  min-width: 0;
+  color: #333333;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.endpoint-row {
+  align-items: center;
+}
+
+.endpoint-host {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: #666666;
+  font-size: 11px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-button {
+  flex-shrink: 0;
+  padding: 0;
+  background: transparent;
+  color: #229ed9;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.link-button:hover {
+  color: #1677aa;
+}
+
+.rex-toggle {
+  position: relative;
+  display: inline-block;
+  width: 32px;
+  height: 18px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.rex-toggle input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  margin: 0;
+  opacity: 0;
+}
+
+.rex-toggle-slider {
+  position: absolute;
+  inset: 0;
+  border-radius: 20px;
+  background: #d9d9d9;
+  transition: 0.2s;
+}
+
+.rex-toggle-slider::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: 0.2s;
+}
+
+.rex-toggle input:checked+.rex-toggle-slider {
+  background: #229ed9;
+}
+
+.rex-toggle input:checked+.rex-toggle-slider::before {
+  transform: translateX(14px);
+}
+
+.settings-select {
+  width: 58px;
+  height: 22px;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  padding: 2px 6px;
+  background: #ffffff;
+  color: #333333;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.language-select {
+  width: 112px;
+}
+
+.settings-select:focus {
+  border-color: #229ed9;
+  box-shadow: 0 0 0 2px rgba(34, 158, 217, 0.12);
+}
+
+.config-list {
+  display: grid;
+  gap: 6px;
+  max-height: 118px;
+  margin-bottom: 10px;
+  overflow-y: auto;
+}
+
+.config-empty {
+  margin: 0;
+  border: 1px dashed #d9d9d9;
+  border-radius: 4px;
+  padding: 10px;
+  color: #999999;
+  font-size: 11px;
+  text-align: center;
+}
+
+.config-item {
+  display: flex;
+  align-items: center;
+  column-gap: 6px;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #eeeeee;
+  border-radius: 4px;
+  padding: 6px 6px 6px 10px;
+  background: #ffffff;
+  color: #333333;
+  text-align: left;
+  line-height: 1;
+}
+
+.config-item.dragging {
+  opacity: 0.4;
+}
+
+.config-item:hover,
+.config-item[data-active="true"] {
+  border-color: #229ed9;
+  background: rgba(34, 158, 217, 0.08);
+}
+
+.config-item-drag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 14px;
+  height: 18px;
+  color: #bfbfbf;
+  cursor: grab;
+  user-select: none;
+  border-radius: 3px;
+  transition: color 0.12s, background 0.12s;
+}
+
+.config-item-drag svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+
+.config-item-drag:hover {
+  color: #595959;
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.config-item:active .config-item-drag {
+  cursor: grabbing;
+}
+
+.config-title,
+.config-item-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.config-item-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.config-item-note {
+  color: #333333;
+  font-weight: 500;
+  flex-shrink: 0;
+  max-width: 100px;
+}
+
+.config-item-chatid {
+  color: #999999;
+  flex: 1;
+  min-width: 0;
+}
+
+.config-item-delete {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  padding: 2px;
+  border-radius: 50%;
+  background: #e0e0e0;
+  color: #757575;
+  line-height: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.config-item-delete svg {
+  display: block;
+  width: 9px;
+  height: 9px;
+}
+
+.config-item:hover .config-item-delete {
+  opacity: 1;
+}
+
+.config-item-delete:hover {
+  background: #666666;
+  color: #fff;
+}
+
+#settings-form {
+  display: grid;
+  gap: 10px;
+}
+
+#settings-form label {
+  position: relative;
+  display: grid;
+  gap: 4px;
+}
+
+#settings-form label span {
+  color: #666666;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+#settings-form .field-label {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  color: #666666;
+}
+
+.info-icon {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-left: 4px;
+  color: #bfbfbf;
+  cursor: help;
+  transition: color 0.15s;
+}
+
+.info-icon svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+
+.info-icon:hover,
+.info-icon:focus-visible {
+  color: #0058ff;
+  outline: none;
+}
+
+.info-icon::after {
+  box-sizing: border-box;
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + var(--tooltip-anchor-gap));
+  left: 14px;
+  width: max-content;
+  max-width: calc(100% - 28px);
+  padding: var(--tooltip-padding);
+  background: var(--tooltip-bg);
+  color: var(--tooltip-color);
+  font-size: var(--tooltip-font-size);
+  line-height: var(--tooltip-line-height);
+  font-weight: 400;
+  text-align: left;
+  border-radius: var(--tooltip-radius);
+  box-shadow: var(--tooltip-shadow);
+  white-space: normal;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  z-index: 100;
+}
+
+.info-icon::before {
+  content: "";
+  position: absolute;
+  bottom: calc(100% - var(--tooltip-arrow-size) + var(--tooltip-anchor-gap));
+  left: var(--info-icon-x, 50%);
+  width: 0;
+  height: 0;
+  margin-left: calc(-1 * var(--tooltip-arrow-half-width));
+  border-left: var(--tooltip-arrow-half-width) solid transparent;
+  border-right: var(--tooltip-arrow-half-width) solid transparent;
+  border-top: var(--tooltip-arrow-size) solid var(--tooltip-bg);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  z-index: 101;
+}
+
+.info-icon[data-tooltip]:not([data-tooltip=""]):hover::after,
+.info-icon[data-tooltip]:not([data-tooltip=""]):hover::before,
+.info-icon[data-tooltip]:not([data-tooltip=""]):focus-visible::after,
+.info-icon[data-tooltip]:not([data-tooltip=""]):focus-visible::before {
+  opacity: 1;
+  visibility: visible;
+}
+
+#settings-form input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  padding: 5px 8px;
+  color: #333333;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+#settings-form input:focus {
+  border-color: #229ed9;
+  box-shadow: 0 0 0 2px rgba(34, 158, 217, 0.12);
+}
+
+.settings-actions {
+  margin-top: 2px;
+}
+
+.settings-actions .primary-button {
+  width: 100%;
+}
+
+.primary-button,
+.secondary-button,
+.danger-button {
+  height: 30px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.compact-button {
+  width: auto;
+  min-width: 52px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.primary-button {
+  background: #229ed9;
+  color: #ffffff;
+}
+
+.primary-button:hover {
+  background: #1d8fc5;
+}
+
+.secondary-button {
+  border: 1px solid #d9d9d9;
+  background: #ffffff;
+  color: #333333;
+}
+
+.secondary-button:hover {
+  background: #f5f5f5;
+}
+
+.danger-button {
+  border: 1px solid #ffd6d4;
+  background: #fff2f0;
+  color: #ff4d4f;
+}
+
+.danger-button:hover {
+  background: #ffe8e6;
+}
+
+.settings-status {
+  margin: 8px 0 0;
+  color: #52c41a;
+  font-size: 11px;
+}
+
+.settings-status.error {
+  color: #ff4d4f;
+}
+
+.queue-error-trigger {
+  /* Failed-task tooltip contract:
+   * - Reuse the same visual tokens as the settings .info-icon tooltip.
+   * - Always open upward; first-row tooltips must not be flipped downward.
+   * - .queue-list must not add top padding/blank space for this; it clips
+   *   only horizontally and lets upward bubbles overflow vertically.
+   * - JS clamps the bubble against --tooltip-popup-gutter so it leaves
+   *   breathing room at both popup edges and never overflows horizontally.
+   * - The arrow overlaps the bubble by 1px, making the triangle and bubble
+   *   a single connected shape with no gap.
+   * - Because .queue-track is transformed for pagination, position:fixed
+   *   pseudo-elements below use track-relative coordinates from JS. */
+  --queue-tooltip-arrow-overlap: 1px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 5px;
+  position: relative;
+  top: 1px;
+  vertical-align: baseline;
+  color: #ff4d4f;
+  flex-shrink: 0;
+  line-height: inherit;
+  cursor: help;
+  outline: none;
+}
+
+.queue-error-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  height: 1em;
+}
+
+.queue-error-icon svg {
+  display: block;
+  width: 10px;
+  height: 10px;
+}
+
+.queue-error-trigger:hover,
+.queue-error-trigger:focus-visible {
+  color: #ff4d4f;
+}
+
+.queue-error-label {
+  display: inline-block;
+  color: #ff4d4f;
+  line-height: inherit;
+  vertical-align: baseline;
+}
+
+.queue-error-trigger::after {
+  /* NOTE: position:fixed here has .queue-track (with transform) as its
+   * containing block per CSS spec. Coordinates from
+   * syncQueueTooltipAnchors MUST be relative to the track's bbox, not
+   * the viewport. If you change position, transform, or the containing
+   * block chain, update the JS coordinate math accordingly. */
+  box-sizing: border-box;
+  content: attr(data-tooltip);
+  position: fixed;
+  top: var(--queue-tooltip-top, 0);
+  left: var(--queue-tooltip-left, 0);
+  z-index: 2147483647;
+  width: var(--queue-tooltip-width, fit-content);
+  max-width: var(--queue-tooltip-max-width, 276px);
+  padding: var(--tooltip-padding);
+  background: var(--tooltip-bg);
+  color: var(--tooltip-color);
+  font-size: var(--tooltip-font-size);
+  line-height: var(--tooltip-line-height);
+  font-weight: 400;
+  border-radius: var(--tooltip-radius);
+  box-shadow: var(--tooltip-shadow);
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: break-word;
+  pointer-events: none;
+  transform: translateY(-100%);
+  opacity: 0;
+  visibility: hidden;
+}
+
+.queue-error-trigger::before {
+  /* Same track-relative coordinate rule as ::after. Keep the 1px overlap
+   * so the arrow and bubble remain connected with no gap. */
+  content: "";
+  position: fixed;
+  top: calc(var(--queue-tooltip-top, 0) - var(--queue-tooltip-arrow-overlap));
+  left: var(--queue-tooltip-arrow-left, 0);
+  width: 0;
+  height: 0;
+  margin-left: calc(-1 * var(--tooltip-arrow-half-width));
+  border-left: var(--tooltip-arrow-half-width) solid transparent;
+  border-right: var(--tooltip-arrow-half-width) solid transparent;
+  border-top: var(--tooltip-arrow-size) solid var(--tooltip-bg);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  z-index: 2147483647;
+}
+
+.queue-error-trigger[data-tooltip]:not([data-tooltip=""]):hover::after,
+.queue-error-trigger[data-tooltip]:not([data-tooltip=""]):hover::before,
+.queue-error-trigger[data-tooltip]:not([data-tooltip=""]):focus-visible::after,
+.queue-error-trigger[data-tooltip]:not([data-tooltip=""]):focus-visible::before {
+  opacity: 1;
+  visibility: visible;
+}
+
+.queue-tooltip-measure {
+  box-sizing: border-box;
+  position: fixed;
+  left: -10000px;
+  top: -10000px;
+  z-index: -1;
+  width: 276px;
+  max-width: 276px;
+  padding: var(--tooltip-padding);
+  font: inherit;
+  font-size: var(--tooltip-font-size);
+  line-height: var(--tooltip-line-height);
+  font-weight: 400;
+  white-space: normal;
+  overflow-wrap: break-word;
+  visibility: hidden;
+}
+
+
+.queue-sub-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.queue-sub-row .queue-sub-line {
+  flex: 1;
+  min-width: 0;
+}
+
+.retry-inline:hover svg {
+  fill: #fff;
+}
+
+.retry-inline:hover path {
+  fill: #fff !important;
+}

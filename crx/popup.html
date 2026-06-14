@@ -1,0 +1,152 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Save2Telegram</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+  <main>
+    <header id="header-main">
+      <div class="queue-tabs" id="queue-tabs" role="tablist" aria-label="Queue filter"
+        data-i18n-aria-label="popup_queueFilter">
+        <button class="queue-tab active" type="button" role="tab" aria-selected="true" data-filter="all"
+          data-i18n="popup_queueAll">All</button>
+        <button class="queue-tab" type="button" role="tab" aria-selected="false" data-filter="active"
+          data-i18n="popup_queueActive">Uploading</button>
+        <button class="queue-tab" type="button" role="tab" aria-selected="false" data-filter="error"
+          data-i18n="popup_queueError">Failed</button>
+      </div>
+      <button id="open-options" class="settings-button" type="button" title="Open settings" aria-label="Open settings"
+        data-i18n-title="popup_openSettings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+          stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path
+            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+          </path>
+        </svg>
+      </button>
+    </header>
+
+    <header id="header-settings" class="hidden">
+      <button id="back-to-queue" class="settings-button" type="button" title="Back to queue" aria-label="Back to queue"
+        data-i18n-title="popup_backToQueue">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+          stroke-linejoin="round" aria-hidden="true">
+          <line x1="19" y1="12" x2="5" y2="12"></line>
+          <polyline points="12 19 5 12 12 5"></polyline>
+        </svg>
+      </button>
+      <strong data-i18n="popup_settings">Settings</strong>
+    </header>
+
+    <section id="view-queue">
+      <div id="queue-list" class="queue-list" aria-live="polite"></div>
+      <div id="queue-pagination" class="queue-pagination hidden" aria-label="Upload list pagination"
+        data-i18n-aria-label="popup_queuePagination"></div>
+    </section>
+
+    <section id="view-settings" class="settings-view hidden">
+      <section class="settings-section">
+        <h2 data-i18n="popup_settingsGeneral">General Settings</h2>
+        <div class="settings-row">
+          <span class="settings-label" data-i18n="popup_language">Language</span>
+          <select id="language-select" class="settings-select language-select">
+            <option value="auto" data-i18n="popup_languageAuto">Auto</option>
+            <option value="zh_CN">Chinese (Simplified)</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label" data-i18n="popup_keepCompleted">Keep completed items</span>
+          <label class="rex-toggle">
+            <input id="keep-completed-items" type="checkbox">
+            <span class="rex-toggle-slider"></span>
+          </label>
+        </div>
+        <div id="max-completed-items-row" class="settings-row">
+          <span class="settings-label" data-i18n="popup_maxRecords">Max records</span>
+          <select id="max-completed-items" class="settings-select">
+            <option value="5">5</option>
+            <option value="10">10</option>
+            <option value="30">30</option>
+          </select>
+        </div>
+        <div id="forward-endpoint-row" class="settings-row endpoint-row hidden">
+          <span class="settings-label" data-i18n="popup_endpoint">Endpoint</span>
+          <span id="forward-endpoint-host" class="endpoint-host"></span>
+          <button id="clear-forward-endpoint" class="link-button" type="button"
+            data-i18n="popup_cancelEndpoint">Cancel</button>
+        </div>
+      </section>
+      <section class="settings-section">
+        <div class="settings-section-header">
+          <h2 data-i18n="popup_configs">Telegram Configs</h2>
+          <button id="new-config" class="section-add-button" type="button" title="Add config" aria-label="Add config"
+            data-i18n-title="popup_addConfigTitle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round" aria-hidden="true">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+          </button>
+        </div>
+        <div id="config-list" class="config-list"></div>
+        <form id="settings-form">
+          <input id="config-id" name="configId" type="hidden">
+          <label>
+            <span data-i18n="popup_fieldNote">Note</span>
+            <input id="config-note" name="note" type="text" autocomplete="off"
+              placeholder="e.g. Main channel / Test group" data-i18n-placeholder="popup_notePlaceholder">
+          </label>
+          <label>
+            <span class="field-label">
+              <span data-i18n="popup_fieldBotToken">Bot Token</span>
+              <span class="info-icon" data-tooltip="" data-i18n-tooltip="popup_botTokenHelp" tabindex="0"
+                aria-label="Bot Token help" data-i18n-title="popup_botTokenHelp"
+                data-i18n-aria-label="popup_botTokenHelpLabel">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
+                  stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="8" cy="8" r="6.6"></circle>
+                  <line x1="8" y1="7.2" x2="8" y2="11.4"></line>
+                  <circle cx="8" cy="4.8" r="0.5" fill="currentColor" stroke="none"></circle>
+                </svg>
+              </span>
+            </span>
+            <input id="bot-token" name="botToken" type="password" autocomplete="off" placeholder="123456:ABC-DEF..."
+              data-i18n-placeholder="popup_botTokenPlaceholder">
+          </label>
+          <label>
+            <span class="field-label">
+              <span data-i18n="popup_fieldChatId">Channel ID / @username</span>
+              <span class="info-icon" data-tooltip="" data-i18n-tooltip="popup_chatIdHelp" tabindex="0"
+                aria-label="Channel ID help" data-i18n-title="popup_chatIdHelp"
+                data-i18n-aria-label="popup_chatIdHelpLabel">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
+                  stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="8" cy="8" r="6.6"></circle>
+                  <line x1="8" y1="7.2" x2="8" y2="11.4"></line>
+                  <circle cx="8" cy="4.8" r="0.5" fill="currentColor" stroke="none"></circle>
+                </svg>
+              </span>
+            </span>
+            <input id="chat-id" name="chatId" type="text" autocomplete="off" placeholder="@channel or -100..."
+              data-i18n-placeholder="popup_chatIdPlaceholder">
+          </label>
+          <div class="settings-actions">
+            <button class="primary-button" type="submit" data-i18n="popup_save">Save</button>
+          </div>
+        </form>
+      </section>
+      <p id="settings-status" class="settings-status hidden" role="status"></p>
+    </section>
+  </main>
+  <script src="lib/i18n.js"></script>
+  <script src="popup.js"></script>
+</body>
+
+</html>

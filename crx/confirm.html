@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title data-i18n="confirm_title">Confirm Endpoint Binding</title>
+  <link rel="stylesheet" href="confirm.css">
+</head>
+
+<body>
+  <main>
+    <header>
+      <h1 data-i18n="confirm_heading">Confirm Forward Endpoint Binding</h1>
+      <p data-i18n="confirm_description">An external webpage is requesting to change the Save2Telegram forwarding endpoint.</p>
+    </header>
+
+    <section class="details" aria-live="polite">
+      <div class="detail-row">
+        <span data-i18n="confirm_requestOrigin">Request Origin</span>
+        <strong id="request-origin" data-i18n="confirm_loading">Loading...</strong>
+      </div>
+      <div class="detail-row">
+        <span data-i18n="confirm_forwardEndpoint">Forward Endpoint</span>
+        <strong id="endpoint-url" data-i18n="confirm_loading">Loading...</strong>
+      </div>
+    </section>
+
+    <p id="status" class="status" role="status"></p>
+
+    <footer>
+      <button id="reject" class="secondary-button" type="button" data-i18n="confirm_cancel">Cancel</button>
+      <button id="approve" class="primary-button" type="button" data-i18n="confirm_confirmBinding">Confirm Binding</button>
+    </footer>
+  </main>
+  <script src="lib/i18n.js"></script>
+  <script src="confirm.js"></script>
+</body>
+
+</html>

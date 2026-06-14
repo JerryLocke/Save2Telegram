@@ -1,0 +1,324 @@
+{
+  "app_name": {
+    "message": "Save2Telegram"
+  },
+  "app_description": {
+    "message": "Forward Twitter/X media to a Telegram channel through a Telegram Bot."
+  },
+  "popup_title": {
+    "message": "Save2Telegram"
+  },
+  "popup_settings": {
+    "message": "Settings"
+  },
+  "popup_back": {
+    "message": "Back"
+  },
+  "popup_queueAll": {
+    "message": "All"
+  },
+  "popup_queueActive": {
+    "message": "Uploading"
+  },
+  "popup_queueError": {
+    "message": "Error"
+  },
+  "popup_queueFilter": {
+    "message": "Queue filter"
+  },
+  "popup_queuePagination": {
+    "message": "Upload list pagination"
+  },
+  "popup_settingsGeneral": {
+    "message": "General Settings"
+  },
+  "popup_language": {
+    "message": "Language"
+  },
+  "popup_languageAuto": {
+    "message": "Auto"
+  },
+  "popup_keepCompleted": {
+    "message": "Keep completed items"
+  },
+  "popup_maxRecords": {
+    "message": "Max records"
+  },
+  "popup_endpoint": {
+    "message": "Endpoint"
+  },
+  "popup_cancelEndpoint": {
+    "message": "Cancel"
+  },
+  "popup_configs": {
+    "message": "Telegram Config"
+  },
+  "popup_newConfig": {
+    "message": "Add config"
+  },
+  "popup_fieldNote": {
+    "message": "Note"
+  },
+  "popup_fieldBotToken": {
+    "message": "Bot Token"
+  },
+  "popup_fieldChatId": {
+    "message": "Channel ID / @username"
+  },
+  "popup_botTokenHelp": {
+    "message": "Leave blank to keep the existing value when editing a config."
+  },
+  "popup_botTokenHelpLabel": {
+    "message": "Bot Token help"
+  },
+  "popup_chatIdHelp": {
+    "message": "Public channels use @username (e.g. @example_channel). Private channels use the numeric ID starting with -100. The Bot must be an admin of the target channel; if you don't know the private channel ID, derive it from the Telegram Web address, or test by calling Bot API sendMessage."
+  },
+  "popup_chatIdHelpLabel": {
+    "message": "Channel ID help"
+  },
+  "popup_save": {
+    "message": "Save"
+  },
+  "popup_add": {
+    "message": "Add"
+  },
+  "popup_noConfigs": {
+    "message": "No configs."
+  },
+  "popup_queueEmptyAll": {
+    "message": "No items in queue."
+  },
+  "popup_queueEmptyActive": {
+    "message": "No items uploading."
+  },
+  "popup_queueEmptyError": {
+    "message": "No failed items."
+  },
+  "popup_untitledTweet": {
+    "message": "Untitled tweet"
+  },
+  "popup_retry": {
+    "message": "Retry"
+  },
+  "popup_openOriginal": {
+    "message": "Open original"
+  },
+  "popup_remove": {
+    "message": "Remove"
+  },
+  "popup_delete": {
+    "message": "Delete"
+  },
+  "popup_cancel": {
+    "message": "Cancel"
+  },
+  "popup_phasePending": {
+    "message": "Pending"
+  },
+  "popup_phaseSending": {
+    "message": "Sending"
+  },
+  "popup_phaseUpload": {
+    "message": "Uploading"
+  },
+  "popup_phaseDownload": {
+    "message": "Downloading"
+  },
+  "popup_mediaPhotos": {
+    "message": "$1 image(s)"
+  },
+  "popup_mediaVideos": {
+    "message": "$1 video(s)"
+  },
+  "popup_mediaLink": {
+    "message": "Link"
+  },
+  "popup_done": {
+    "message": "Done"
+  },
+  "popup_failed": {
+    "message": "Failed"
+  },
+  "popup_dragReorder": {
+    "message": "Drag to reorder"
+  },
+  "popup_page": {
+    "message": "Page $1"
+  },
+  "popup_saveConfigFailed": {
+    "message": "New config requires note, Bot Token and Channel ID."
+  },
+  "popup_readConfigFailed": {
+    "message": "Failed to read configs."
+  },
+  "popup_readQueueFailed": {
+    "message": "Failed to read queue."
+  },
+  "popup_queueOpFailed": {
+    "message": "Queue operation failed."
+  },
+  "popup_deleteConfigFailed": {
+    "message": "Failed to delete config."
+  },
+  "popup_saveGeneralFailed": {
+    "message": "Failed to save settings."
+  },
+  "popup_clearEndpointFailed": {
+    "message": "Failed to clear endpoint."
+  },
+  "popup_notePlaceholder": {
+    "message": "e.g. Main channel / Test group"
+  },
+  "popup_botTokenPlaceholder": {
+    "message": "123456:ABC-DEF..."
+  },
+  "popup_chatIdPlaceholder": {
+    "message": "@channel or -100..."
+  },
+  "popup_openSettings": {
+    "message": "Open settings"
+  },
+  "popup_backToQueue": {
+    "message": "Back to queue"
+  },
+  "popup_addConfigTitle": {
+    "message": "Add config"
+  },
+  "popup_unnamedConfig": {
+    "message": "Unnamed config"
+  },
+  "popup_err_saveConfigFailed": {
+    "message": "Failed to save config."
+  },
+  "popup_err_saveOrderFailed": {
+    "message": "Failed to save config order."
+  },
+  "popup_err_readSettingsFailed": {
+    "message": "Failed to read general settings: "
+  },
+
+  "confirm_title": {
+    "message": "Confirm Forward Endpoint Binding"
+  },
+  "confirm_heading": {
+    "message": "Confirm Forward Endpoint Binding"
+  },
+  "confirm_description": {
+    "message": "An external webpage is requesting to change the Save2Telegram forwarding endpoint."
+  },
+  "confirm_requestOrigin": {
+    "message": "Request Origin"
+  },
+  "confirm_forwardEndpoint": {
+    "message": "Forward Endpoint"
+  },
+  "confirm_loading": {
+    "message": "Loading..."
+  },
+  "confirm_cancel": {
+    "message": "Cancel"
+  },
+  "confirm_confirmBinding": {
+    "message": "Confirm Binding"
+  },
+  "confirm_bindingNotFound": {
+    "message": "Binding request not found."
+  },
+  "confirm_unknownOrigin": {
+    "message": "Unknown origin"
+  },
+  "confirm_operationFailed": {
+    "message": "Operation failed."
+  },
+  "confirm_invalidEndpointUrl": {
+    "message": "Invalid endpoint URL."
+  },
+  "confirm_permissionRequired": {
+    "message": "You must allow access to this endpoint before binding."
+  },
+  "bg_bindingCancelled": {
+    "message": "Endpoint binding cancelled."
+  },
+  "bg_noTweetUrl": {
+    "message": "No tweet URL found to forward."
+  },
+  "bg_missingConfigFields": {
+    "message": "Please fill in note, Bot Token and Channel ID."
+  },
+  "bg_missingConfigId": {
+    "message": "Missing config ID."
+  },
+  "bg_invalidEndpointUrl": {
+    "message": "Invalid endpoint URL."
+  },
+  "bg_missingEndpointUrl": {
+    "message": "Endpoint URL is invalid."
+  },
+  "bg_missingEndpointKey": {
+    "message": "Endpoint key is missing."
+  },
+  "bg_bindingTimeout": {
+    "message": "Endpoint binding confirmation timed out."
+  },
+  "bg_bindingExpired": {
+    "message": "Binding request has expired or does not exist."
+  },
+  "bg_bindingRejected": {
+    "message": "User cancelled the endpoint binding."
+  },
+  "bg_configureFirst": {
+    "message": "Please configure a Telegram Bot Token and Channel ID in the extension popup first."
+  },
+  "bg_configIncomplete": {
+    "message": "The selected Telegram configuration is incomplete."
+  },
+  "bg_unnamedConfig": {
+    "message": "Unnamed config"
+  },
+  "bg_noDownloadableVideo": {
+    "message": "No downloadable video URL found. Please open the video and try again."
+  },
+  "bg_videoDownloadFailed": {
+    "message": "Video download failed: $1"
+  },
+  "bg_hlsSeparateStreams": {
+    "message": "This video has separate HLS audio/video streams. The Chrome extension cannot locally merge them into a Telegram-playable MP4."
+  },
+  "bg_noHlsSegments": {
+    "message": "No HLS video segments found."
+  },
+  "bg_uploadTimeout": {
+    "message": "Upload to Telegram timed out. Please check your network or video file size and try again."
+  },
+  "bg_telegramApiFailed": {
+    "message": "Telegram API call failed: $1"
+  },
+  "content_labelReady": {
+    "message": "Forward to Telegram"
+  },
+  "content_labelSending": {
+    "message": "Adding to queue..."
+  },
+  "content_labelSent": {
+    "message": "Forwarded"
+  },
+  "content_labelRecent": {
+    "message": "Recent"
+  },
+  "content_messageSent": {
+    "message": "Added to Telegram forward queue"
+  },
+  "content_messageFailed": {
+    "message": "Forward failed, please try again later."
+  },
+  "content_noConfig": {
+    "message": "Please add a Telegram configuration in the extension popup first"
+  },
+  "content_loadConfigFailed": {
+    "message": "Failed to read Telegram configurations."
+  },
+  "content_unnamedConfig": {
+    "message": "Unnamed config"
+  }
+}

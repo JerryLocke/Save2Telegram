@@ -1,0 +1,323 @@
+{
+  "app_name": {
+    "message": "Save2Telegram"
+  },
+  "app_description": {
+    "message": "通过 Telegram Bot 将 Twitter/X 媒体转发到 Telegram 频道。"
+  },
+  "popup_title": {
+    "message": "Save2Telegram"
+  },
+  "popup_settings": {
+    "message": "设置"
+  },
+  "popup_back": {
+    "message": "返回"
+  },
+  "popup_queueAll": {
+    "message": "全部"
+  },
+  "popup_queueActive": {
+    "message": "上传中"
+  },
+  "popup_queueError": {
+    "message": "失败"
+  },
+  "popup_queueFilter": {
+    "message": "队列筛选"
+  },
+  "popup_queuePagination": {
+    "message": "上传列表分页"
+  },
+  "popup_settingsGeneral": {
+    "message": "常规设置"
+  },
+  "popup_language": {
+    "message": "语言"
+  },
+  "popup_languageAuto": {
+    "message": "自动"
+  },
+  "popup_keepCompleted": {
+    "message": "保留已完成的项目"
+  },
+  "popup_maxRecords": {
+    "message": "最大记录数"
+  },
+  "popup_endpoint": {
+    "message": "端点"
+  },
+  "popup_cancelEndpoint": {
+    "message": "取消"
+  },
+  "popup_configs": {
+    "message": "Telegram 配置"
+  },
+  "popup_newConfig": {
+    "message": "新增配置"
+  },
+  "popup_fieldNote": {
+    "message": "备注"
+  },
+  "popup_fieldBotToken": {
+    "message": "Bot Token"
+  },
+  "popup_fieldChatId": {
+    "message": "Channel ID / @username"
+  },
+  "popup_botTokenHelp": {
+    "message": "编辑已有配置时，Bot Token 留空会保留原值。"
+  },
+  "popup_botTokenHelpLabel": {
+    "message": "Bot Token 填写说明"
+  },
+  "popup_chatIdHelp": {
+    "message": "公开频道填写 @username，例如 @example_channel。私有频道填写 -100 开头的数字 ID。Bot 必须是目标频道管理员；如果不知道私有频道 ID，可以从 Telegram Web 地址辅助推导，或用 Bot API sendMessage 测试填写值是否可用。"
+  },
+  "popup_chatIdHelpLabel": {
+    "message": "Channel ID 填写说明"
+  },
+  "popup_save": {
+    "message": "保存"
+  },
+  "popup_add": {
+    "message": "新增"
+  },
+  "popup_noConfigs": {
+    "message": "暂无配置。"
+  },
+  "popup_queueEmptyAll": {
+    "message": "当前没有队列项目。"
+  },
+  "popup_queueEmptyActive": {
+    "message": "当前没有上传中的项目。"
+  },
+  "popup_queueEmptyError": {
+    "message": "当前没有失败项目。"
+  },
+  "popup_untitledTweet": {
+    "message": "未命名推文"
+  },
+  "popup_retry": {
+    "message": "重试"
+  },
+  "popup_openOriginal": {
+    "message": "打开原文"
+  },
+  "popup_remove": {
+    "message": "删除"
+  },
+  "popup_delete": {
+    "message": "删除"
+  },
+  "popup_cancel": {
+    "message": "取消"
+  },
+  "popup_phasePending": {
+    "message": "等待"
+  },
+  "popup_phaseSending": {
+    "message": "发送"
+  },
+  "popup_phaseUpload": {
+    "message": "上传"
+  },
+  "popup_phaseDownload": {
+    "message": "下载"
+  },
+  "popup_mediaPhotos": {
+    "message": "$1 图片"
+  },
+  "popup_mediaVideos": {
+    "message": "$1 视频"
+  },
+  "popup_mediaLink": {
+    "message": "链接"
+  },
+  "popup_done": {
+    "message": "完成"
+  },
+  "popup_failed": {
+    "message": "失败"
+  },
+  "popup_dragReorder": {
+    "message": "拖动排序"
+  },
+  "popup_page": {
+    "message": "第  页"
+  },
+  "popup_saveConfigFailed": {
+    "message": "新增配置需要填写备注、Bot Token 和 Channel ID。"
+  },
+  "popup_readConfigFailed": {
+    "message": "读取配置失败。"
+  },
+  "popup_readQueueFailed": {
+    "message": "读取队列失败。"
+  },
+  "popup_queueOpFailed": {
+    "message": "队列操作失败。"
+  },
+  "popup_deleteConfigFailed": {
+    "message": "删除配置失败。"
+  },
+  "popup_saveGeneralFailed": {
+    "message": "保存设置失败。"
+  },
+  "popup_clearEndpointFailed": {
+    "message": "取消端点失败。"
+  },
+  "popup_notePlaceholder": {
+    "message": "例如：主频道 / 测试群"
+  },
+  "popup_botTokenPlaceholder": {
+    "message": "123456:ABC-DEF..."
+  },
+  "popup_chatIdPlaceholder": {
+    "message": "@channel 或 -100..."
+  },
+  "popup_openSettings": {
+    "message": "打开设置"
+  },
+  "popup_backToQueue": {
+    "message": "返回队列"
+  },
+  "popup_addConfigTitle": {
+    "message": "新增配置"
+  },
+  "popup_unnamedConfig": {
+    "message": "未命名配置"
+  },
+  "popup_err_saveConfigFailed": {
+    "message": "保存配置失败。"
+  },
+  "popup_err_saveOrderFailed": {
+    "message": "保存配置顺序失败。"
+  },
+  "popup_err_readSettingsFailed": {
+    "message": "读取常规设置失败："
+  },
+  "confirm_title": {
+    "message": "确认转发端点绑定"
+  },
+  "confirm_heading": {
+    "message": "确认转发端点绑定"
+  },
+  "confirm_description": {
+    "message": "外部网页正在请求更改 Save2Telegram 转发端点。"
+  },
+  "confirm_requestOrigin": {
+    "message": "请求来源"
+  },
+  "confirm_forwardEndpoint": {
+    "message": "转发端点"
+  },
+  "confirm_loading": {
+    "message": "加载中..."
+  },
+  "confirm_cancel": {
+    "message": "取消"
+  },
+  "confirm_confirmBinding": {
+    "message": "确认绑定"
+  },
+  "confirm_bindingNotFound": {
+    "message": "未找到绑定请求。"
+  },
+  "confirm_unknownOrigin": {
+    "message": "未知来源"
+  },
+  "confirm_operationFailed": {
+    "message": "操作失败。"
+  },
+  "confirm_invalidEndpointUrl": {
+    "message": "无效的端点 URL。"
+  },
+  "confirm_permissionRequired": {
+    "message": "绑定前必须允许访问此端点。"
+  },
+  "bg_bindingCancelled": {
+    "message": "端点绑定已取消。"
+  },
+  "bg_noTweetUrl": {
+    "message": "未找到要转发的推文 URL。"
+  },
+  "bg_missingConfigFields": {
+    "message": "请填写备注、Bot Token 和 Channel ID。"
+  },
+  "bg_missingConfigId": {
+    "message": "缺少配置 ID。"
+  },
+  "bg_invalidEndpointUrl": {
+    "message": "无效的端点 URL。"
+  },
+  "bg_missingEndpointUrl": {
+    "message": "端点地址无效。"
+  },
+  "bg_missingEndpointKey": {
+    "message": "端点 key 缺失。"
+  },
+  "bg_bindingTimeout": {
+    "message": "端点绑定确认超时。"
+  },
+  "bg_bindingExpired": {
+    "message": "绑定请求已过期或不存在。"
+  },
+  "bg_bindingRejected": {
+    "message": "用户取消了端点绑定。"
+  },
+  "bg_configureFirst": {
+    "message": "请先在扩展 popup 中配置 Telegram Bot Token 和 Channel ID。"
+  },
+  "bg_configIncomplete": {
+    "message": "选中的 Telegram 配置不完整。"
+  },
+  "bg_unnamedConfig": {
+    "message": "未命名配置"
+  },
+  "bg_noDownloadableVideo": {
+    "message": "未找到可下载的视频 URL。请打开视频后重试。"
+  },
+  "bg_videoDownloadFailed": {
+    "message": "视频下载失败：$1"
+  },
+  "bg_hlsSeparateStreams": {
+    "message": "该视频包含独立的 HLS 音频和视频流，Chrome 扩展无法在本地合并为 Telegram 可播放的 MP4。"
+  },
+  "bg_noHlsSegments": {
+    "message": "未找到 HLS 视频片段。"
+  },
+  "bg_uploadTimeout": {
+    "message": "上传到 Telegram 超时，请检查网络或视频文件大小后重试。"
+  },
+  "bg_telegramApiFailed": {
+    "message": "Telegram API 调用失败：$1"
+  },
+  "content_labelReady": {
+    "message": "转发到 Telegram"
+  },
+  "content_labelSending": {
+    "message": "添加队列中..."
+  },
+  "content_labelSent": {
+    "message": "已转发"
+  },
+  "content_labelRecent": {
+    "message": "最近使用"
+  },
+  "content_messageSent": {
+    "message": "已加入 Telegram 转发队列"
+  },
+  "content_messageFailed": {
+    "message": "转发失败，请稍后重试。"
+  },
+  "content_noConfig": {
+    "message": "请先在扩展 popup 中添加 Telegram 配置"
+  },
+  "content_loadConfigFailed": {
+    "message": "读取 Telegram 配置失败。"
+  },
+  "content_unnamedConfig": {
+    "message": "未命名配置"
+  }
+}
