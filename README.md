@@ -81,6 +81,49 @@ docker run -d --name save2telegram-backend -p 18080:3000 \
 
 Do not use `docker rm -v`, `docker volume rm save2telegram-data`, or `docker system prune --volumes` unless you intentionally want to delete the backend data.
 
+## GitHub Actions Build
+
+The workflow in `.github/workflows/build.yml` builds both release artifacts:
+
+- Chrome extension artifact: `save2telegram-extension.zip` is always uploaded. If the signing key secret is configured, `save2telegram-extension.crx` is uploaded too.
+- Backend container image: pushed to `ghcr.io/<owner>/save2telegram-backend` on branch and tag builds. Pull requests build the image without pushing it.
+
+### Extension signing
+
+Chrome derives the extension ID from the private key used to sign the CRX, so keep using the same key for every release.
+
+For the first release, create a private key. For later releases, reuse the existing `extension.pem`:
+
+```bash
+openssl genrsa -out extension.pem 2048
+```
+
+Store the signing key as a repository secret:
+
+```bash
+base64 -w 0 extension.pem
+```
+
+On Windows PowerShell, encode the key with:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("extension.pem"))
+```
+
+Save the output in GitHub repository settings as:
+
+- `CHROME_EXTENSION_PRIVATE_KEY_B64`: Base64-encoded PEM private key used by Chromium's `--pack-extension-key`.
+
+Do not commit `extension.pem` to the repository. If this secret is missing, the workflow still uploads the unsigned zip for "Load unpacked" or Chrome Web Store packaging.
+
+### Registry credentials
+
+The default workflow publishes to GitHub Container Registry (GHCR) with `GITHUB_TOKEN`, so no extra password is required. In GitHub repository settings, ensure Actions has package write access:
+
+- Settings -> Actions -> General -> Workflow permissions -> Read and write permissions.
+
+If you switch to Docker Hub or another registry later, save the registry username and token/password as GitHub Actions secrets, for example `REGISTRY_USERNAME` and `REGISTRY_PASSWORD`, and pass them to `docker/login-action`. Do not hard-code registry credentials in workflow files.
+
 ## Backend API
 
 - `GET /`: Setup page.

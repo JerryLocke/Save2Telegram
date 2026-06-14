@@ -81,6 +81,49 @@ docker run -d --name save2telegram-backend -p 18080:3000 \
 
 不要使用 `docker rm -v`、`docker volume rm save2telegram-data` 或 `docker system prune --volumes`，除非你明确想删除后端数据。
 
+## GitHub Actions 构建
+
+`.github/workflows/build.yml` 会构建两类发布产物：
+
+- Chrome 扩展产物：始终上传 `save2telegram-extension.zip`。如果配置了签名私钥 secret，还会上传 `save2telegram-extension.crx`。
+- 后端容器镜像：分支和 tag 构建会推送到 `ghcr.io/<owner>/save2telegram-backend`。Pull request 只构建镜像，不推送。
+
+### 扩展签名
+
+Chrome 会根据用于签名 CRX 的私钥生成扩展 ID，所以每次发布都要复用同一个私钥。
+
+首次发布时创建私钥。后续发布请复用已有的 `extension.pem`：
+
+```bash
+openssl genrsa -out extension.pem 2048
+```
+
+把签名私钥保存为仓库 secret：
+
+```bash
+base64 -w 0 extension.pem
+```
+
+Windows PowerShell 可以用下面的命令编码：
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("extension.pem"))
+```
+
+把输出内容保存到 GitHub 仓库设置里的 secret：
+
+- `CHROME_EXTENSION_PRIVATE_KEY_B64`：Base64 编码后的 PEM 私钥，供 Chromium 的 `--pack-extension-key` 使用。
+
+不要把 `extension.pem` 提交到仓库。如果没有配置这个 secret，workflow 仍会上传未签名的 zip，可用于“加载已解压的扩展程序”或 Chrome Web Store 打包。
+
+### Registry 凭据
+
+默认 workflow 使用 `GITHUB_TOKEN` 发布到 GitHub Container Registry（GHCR），不需要额外密码。请在 GitHub 仓库设置里确保 Actions 有 package 写入权限：
+
+- Settings -> Actions -> General -> Workflow permissions -> Read and write permissions。
+
+如果之后切换到 Docker Hub 或其他 registry，请把 registry 用户名和 token/password 保存为 GitHub Actions secrets，例如 `REGISTRY_USERNAME` 和 `REGISTRY_PASSWORD`，再传给 `docker/login-action`。不要把 registry 凭据硬编码到 workflow 文件里。
+
 ## 后端接口
 
 - `GET /`：设置页。
