@@ -54,7 +54,7 @@ Docker 参数说明：
 可选后端参数：
 
 - `--app-name Save2Telegram`：设置页和后端日志里显示的应用名称。默认值是 `Save2Telegram`。
-- `--extension-id hgmhehcnmjfookjihllalkhdohopddnk`：允许绑定这个后端的 Chrome 扩展 ID。默认值是已发布的 Save2Telegram 扩展 ID。
+- `--extension-id hibaajhphchibdfkciepacbnifbeiikc`：允许绑定这个后端的 Chrome 扩展 ID。默认值是已发布的 Save2Telegram 扩展 ID。
 - `--secret helloworld`：可选的设置页密钥。设置后，设置页地址是 `/?secret=helloworld`；不设置时，设置页地址是 `/`。
 - `--host 0.0.0.0`：后端监听地址。默认值是 `0.0.0.0`。
 - `--port 3000`：容器内的后端监听端口。默认值是 `3000`。
@@ -66,7 +66,7 @@ Save2Telegram setup URL: http://localhost:18080/
 ```
 
 打开这个地址，点击设置页里的按钮，把后端绑定到扩展。
-如果还没有安装扩展，请先从 [Chrome Web Store](https://chromewebstore.google.com/detail/hgmhehcnmjfookjihllalkhdohopddnk) 安装。
+如果还没有安装扩展，请先从 [Chrome Web Store](https://chromewebstore.google.com/detail/hibaajhphchibdfkciepacbnifbeiikc) 安装。
 
 ## 重启和更新
 

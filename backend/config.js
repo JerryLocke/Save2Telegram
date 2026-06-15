@@ -28,7 +28,7 @@ function normalizeKey(key) {
 }
 
 const args = parseArgs(process.argv.slice(2));
-const DEFAULT_EXTENSION_ID = "hgmhehcnmjfookjihllalkhdohopddnk";
+const DEFAULT_EXTENSION_ID = "hibaajhphchibdfkciepacbnifbeiikc";
 const packageJson = JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 
 export const PORT = Number(args.port || process.env.PORT || 3000);

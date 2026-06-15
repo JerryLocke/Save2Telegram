@@ -54,7 +54,7 @@ Required backend arguments:
 Optional backend arguments:
 
 - `--app-name Save2Telegram`: Display name used by the setup page and backend logs. Defaults to `Save2Telegram`.
-- `--extension-id hgmhehcnmjfookjihllalkhdohopddnk`: Chrome extension ID allowed to bind to this backend. Defaults to the published Save2Telegram extension ID.
+- `--extension-id hibaajhphchibdfkciepacbnifbeiikc`: Chrome extension ID allowed to bind to this backend. Defaults to the published Save2Telegram extension ID.
 - `--secret helloworld`: Optional setup secret. If set, the setup page is available at `/?secret=helloworld`; if omitted, setup is available at `/`.
 - `--host 0.0.0.0`: Backend listen host. Defaults to `0.0.0.0`.
 - `--port 3000`: Backend listen port inside the container. Defaults to `3000`.
@@ -66,7 +66,7 @@ Save2Telegram setup URL: http://localhost:18080/
 ```
 
 Open that URL and click the setup button to bind the backend to the extension.
-If the extension is not installed yet, install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/hgmhehcnmjfookjihllalkhdohopddnk) first.
+If the extension is not installed yet, install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/hibaajhphchibdfkciepacbnifbeiikc) first.
 
 ## Restarting and Updating
 
