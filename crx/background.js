@@ -11,6 +11,7 @@ importScripts('lib/i18n.js');
     keepCompletedItems: false,
     maxCompletedItems: 5,
     endpointUrl: "",
+    endpointSetupUrl: "",
     endpointKey: ""
   };
   const ALLOWED_COMPLETED_RECORD_COUNTS = [5, 10, 30];
@@ -149,7 +150,7 @@ importScripts('lib/i18n.js');
     if (message?.type !== "SET_FORWARD_ENDPOINT") {
       return false;
     }
-    requestForwardEndpointBinding(message.endpointUrl || sender?.url || "", message.key || "", sender, sendResponse)
+    requestForwardEndpointBinding(message.endpointUrl || sender?.url || "", message.key || "", message.setupUrl || sender?.url || "", sender, sendResponse)
       .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
     return true;
   });
@@ -294,15 +295,17 @@ importScripts('lib/i18n.js');
         ? maxCompletedItems
         : DEFAULT_GENERAL_SETTINGS.maxCompletedItems,
       endpointUrl: normalizeEndpointUrl(settings?.endpointUrl || ""),
+      endpointSetupUrl: normalizeSetupUrl(settings?.endpointSetupUrl || settings?.endpointUrl || ""),
       endpointKey: String(settings?.endpointKey || "").trim()
     };
   }
   /** Save a remote forward endpoint URL and API key to settings. */
-  async function saveForwardEndpoint(endpointUrl, endpointKey = "") {
+  async function saveForwardEndpoint(endpointUrl, endpointKey = "", endpointSetupUrl = "") {
     const currentSettings = await getGeneralSettings();
     const nextSettings = normalizeGeneralSettings({
       ...currentSettings,
       endpointUrl,
+      endpointSetupUrl,
       endpointKey
     });
     if (!nextSettings.endpointUrl || !nextSettings.endpointKey) {
@@ -312,7 +315,7 @@ importScripts('lib/i18n.js');
     return nextSettings;
   }
   /** Initiate a forward endpoint binding flow with a confirm dialog. */
-  async function requestForwardEndpointBinding(endpointUrl, endpointKey, sender, sendResponse) {
+  async function requestForwardEndpointBinding(endpointUrl, endpointKey, endpointSetupUrl, sender, sendResponse) {
     const normalizedEndpointUrl = normalizeEndpointUrl(endpointUrl);
     if (!normalizedEndpointUrl) {
       throw new Error(__t("bg_missingEndpointUrl"));
@@ -326,6 +329,7 @@ importScripts('lib/i18n.js');
     const binding = {
       requestId,
       endpointUrl: normalizedEndpointUrl,
+      endpointSetupUrl: normalizeSetupUrl(endpointSetupUrl) || normalizedEndpointUrl,
       endpointKey: normalizedEndpointKey,
       senderUrl,
       senderOrigin: getUrlOrigin(senderUrl),
@@ -374,7 +378,7 @@ importScripts('lib/i18n.js');
     pendingForwardEndpointBindings.delete(binding.requestId);
     clearTimeout(binding.timeoutId);
     try {
-      const settings = await saveForwardEndpoint(binding.endpointUrl, binding.endpointKey);
+      const settings = await saveForwardEndpoint(binding.endpointUrl, binding.endpointKey, binding.endpointSetupUrl);
       binding.sendResponse({ ok: true, result: settings });
       return settings;
     } catch (error) {
@@ -396,6 +400,7 @@ importScripts('lib/i18n.js');
     const nextSettings = normalizeGeneralSettings({
       ...currentSettings,
       endpointUrl: "",
+      endpointSetupUrl: "",
       endpointKey: ""
     });
     await chrome.storage.sync.set({ [GENERAL_SETTINGS_KEY]: nextSettings });
@@ -602,6 +607,24 @@ importScripts('lib/i18n.js');
       queueProcessingPromise = null;
     });
     return queueProcessingPromise;
+  }
+  function normalizeSetupUrl(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return "";
+    }
+
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        return "";
+      }
+
+      url.hash = "";
+      return url.toString();
+    } catch (_) {
+      return "";
+    }
   }
   /** Start pending queue items up to the configured concurrency limit. */
   async function drainQueue() {

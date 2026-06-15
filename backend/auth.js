@@ -1,10 +1,9 @@
-/** Server-side setup secret from SECRET env var. Empty means no setup protection. */
 import crypto from "node:crypto";
 
+import { SERVER_SECRET } from "./config.js";
 import { AppError, Err } from "./errors.js";
 import { readKeyStore, writeKeyStore } from "./store.js";
-
-export const SERVER_SECRET = String(process.env.SECRET || process.env.BACKEND_SECRET || "").trim();
+export { SERVER_SECRET };
 
 /** Extract Bearer token from the Authorization header. */
 export function getBearerToken(req) {

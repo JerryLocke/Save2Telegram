@@ -1,4 +1,5 @@
 import http from "node:http";
+import { APP_NAME, BACKEND_VERSION, EXTENSION_ID, HOST, PORT, PUBLIC_URL } from "./config.js";
 import { AppError, Err } from "./errors.js";
 import { forwardEndpoint } from "./forwarder.js";
 import { createForwardJob, cleanupJobs, jobs, loadJobs, runForwardJob, serializeJob, streamForward, touchJob, updateJob } from "./jobs.js";
@@ -6,10 +7,7 @@ import { createRequestContext, logForwardRequest, logRequestEnd, logRequestStart
 import { getEndpointUrl, getRequestOrigin, normalizeEndpointUrl, readJsonBody, sendHtml, sendJson, sendOptions } from "./http-utils.js";
 import { renderSetupPage, resolveSetupLocale } from "./setup-page.js";
 import { createUserKey, requireSetupSecret, requireUserByBearer, SERVER_SECRET } from "./auth.js";
-const PORT = Number(process.env.PORT || 3000);
-const HOST = String(process.env.HOST || "0.0.0.0");
-const PUBLIC_URL = normalizeEndpointUrl(process.env.PUBLIC_URL || "");
-const EXTENSION_ID = String(process.env.EXTENSION_ID || "").trim();
+const NORMALIZED_PUBLIC_URL = normalizeEndpointUrl(PUBLIC_URL);
 /** Main HTTP server: routes requests for setup, health, key management, and media forwarding. */
 const server = http.createServer(async (req, res) => {
   const context = createRequestContext(req, res);
@@ -26,8 +24,10 @@ const server = http.createServer(async (req, res) => {
         return sendHtml(res, renderNotFoundPage(), 404);
       }
       return sendHtml(res, renderSetupPage(
-        getEndpointUrl(req, PUBLIC_URL, PORT),
+        getEndpointUrl(req, NORMALIZED_PUBLIC_URL, PORT),
         EXTENSION_ID,
+        APP_NAME,
+        BACKEND_VERSION,
         resolveSetupLocale(req, ""),
         Boolean(SERVER_SECRET),
         SERVER_SECRET ? setupSecret : ""
@@ -97,12 +97,15 @@ const server = http.createServer(async (req, res) => {
 // Restore persisted jobs on startup
 await loadJobs();
 server.listen(PORT, HOST, () => {
-  const endpointUrl = PUBLIC_URL || `http://localhost:${PORT}`;
+  const endpointUrl = NORMALIZED_PUBLIC_URL || `http://localhost:${PORT}`;
   const setupUrl = SERVER_SECRET
     ? `${endpointUrl}/?secret=${SERVER_SECRET}`
     : `${endpointUrl}/`;
-  console.info(`Save2Telegram backend listening on ${HOST}:${PORT}`);
-  console.info(`Save2Telegram setup URL: ${setupUrl}`);
+  console.info(`${APP_NAME} backend v${BACKEND_VERSION} listening on ${HOST}:${PORT}`);
+  console.info(`${APP_NAME} setup URL: ${setupUrl}`);
+  if (EXTENSION_ID) {
+    console.info(`${APP_NAME} extension store URL: https://chromewebstore.google.com/detail/${EXTENSION_ID}`);
+  }
 });
 /** Render a simple 404 HTML page. */
 function renderNotFoundPage() {

@@ -33,8 +33,8 @@
     </header>
 
     <header id="header-settings" class="hidden">
-      <button id="back-to-queue" class="settings-button" type="button" title="Back to queue" aria-label="Back to queue"
-        data-i18n-title="popup_backToQueue">
+      <button id="back-to-queue" class="settings-button" type="button" aria-label="Back to queue"
+        data-i18n-aria-label="popup_backToQueue">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
           stroke-linejoin="round" aria-hidden="true">
           <line x1="19" y1="12" x2="5" y2="12"></line>
@@ -78,7 +78,7 @@
         </div>
         <div id="forward-endpoint-row" class="settings-row endpoint-row hidden">
           <span class="settings-label" data-i18n="popup_endpoint">Endpoint</span>
-          <span id="forward-endpoint-host" class="endpoint-host"></span>
+          <a id="forward-endpoint-host" class="endpoint-host" target="_blank" rel="noreferrer"></a>
           <button id="clear-forward-endpoint" class="link-button" type="button"
             data-i18n="popup_cancelEndpoint">Cancel</button>
         </div>
@@ -86,8 +86,8 @@
       <section class="settings-section">
         <div class="settings-section-header">
           <h2 data-i18n="popup_configs">Telegram Configs</h2>
-          <button id="new-config" class="section-add-button" type="button" title="Add config" aria-label="Add config"
-            data-i18n-title="popup_addConfigTitle">
+          <button id="new-config" class="section-add-button" type="button" aria-label="Add config"
+            data-i18n-aria-label="popup_addConfigTitle">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
               stroke-linejoin="round" aria-hidden="true">
               <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -107,7 +107,7 @@
             <span class="field-label">
               <span data-i18n="popup_fieldBotToken">Bot Token</span>
               <span class="info-icon" data-tooltip="" data-i18n-tooltip="popup_botTokenHelp" tabindex="0"
-                aria-label="Bot Token help" data-i18n-title="popup_botTokenHelp"
+                aria-label="Bot Token help"
                 data-i18n-aria-label="popup_botTokenHelpLabel">
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
                   stroke-linejoin="round" aria-hidden="true">
@@ -124,7 +124,7 @@
             <span class="field-label">
               <span data-i18n="popup_fieldChatId">Channel ID / @username</span>
               <span class="info-icon" data-tooltip="" data-i18n-tooltip="popup_chatIdHelp" tabindex="0"
-                aria-label="Channel ID help" data-i18n-title="popup_chatIdHelp"
+                aria-label="Channel ID help"
                 data-i18n-aria-label="popup_chatIdHelpLabel">
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
                   stroke-linejoin="round" aria-hidden="true">

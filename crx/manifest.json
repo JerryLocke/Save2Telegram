@@ -18,7 +18,8 @@
     "https://*.twimg.com/*"
   ],
   "optional_host_permissions": [
-    "http://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
     "https://*/*"
   ],
   "background": {
@@ -27,7 +28,8 @@
   "externally_connectable": {
     "matches": [
       "http://localhost/*",
-      "http://127.0.0.1/*"
+      "http://127.0.0.1/*",
+      "https://*/*"
     ]
   },
  "content_scripts": [

@@ -586,11 +586,17 @@ button:disabled {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  color: #666666;
+  color: #229ed9;
   font-size: 11px;
   text-align: right;
+  text-decoration: none;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.endpoint-host:hover {
+  color: #1677aa;
+  text-decoration: underline;
 }
 
 .link-button {

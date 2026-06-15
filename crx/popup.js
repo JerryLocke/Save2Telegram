@@ -32,6 +32,7 @@
     keepCompletedItems: false,
     maxCompletedItems: 5,
     endpointUrl: "",
+    endpointSetupUrl: "",
     endpointKey: ""
   };
   const ALLOWED_COMPLETED_RECORD_COUNTS = [5, 10, 30];
@@ -97,6 +98,7 @@
         keepCompletedItems: keepCompletedItemsInput.checked,
         maxCompletedItems: Number(maxCompletedItemsSelect.value),
         endpointUrl: currentSettings.endpointUrl,
+        endpointSetupUrl: currentSettings.endpointSetupUrl,
         endpointKey: currentSettings.endpointKey
       });
 
@@ -365,6 +367,7 @@
         ? maxCompletedItems
         : DEFAULT_GENERAL_SETTINGS.maxCompletedItems,
       endpointUrl: normalizeEndpointUrl(settings?.endpointUrl || ""),
+      endpointSetupUrl: normalizeSetupUrl(settings?.endpointSetupUrl || settings?.endpointUrl || ""),
       endpointKey: String(settings?.endpointKey || "").trim()
     };
   }
@@ -375,17 +378,25 @@
     keepCompletedItemsInput.checked = normalized.keepCompletedItems;
     maxCompletedItemsSelect.value = String(normalized.maxCompletedItems);
     syncGeneralSettingsControls();
-    syncForwardEndpointControls(normalized.endpointUrl);
+    syncForwardEndpointControls(normalized.endpointUrl, normalized.endpointSetupUrl);
   }
 
   function syncGeneralSettingsControls() {
     maxCompletedItemsRow.classList.toggle("hidden", !keepCompletedItemsInput.checked);
   }
 
-  function syncForwardEndpointControls(endpointUrl) {
+  function syncForwardEndpointControls(endpointUrl, endpointSetupUrl = "") {
     const normalized = normalizeEndpointUrl(endpointUrl);
     forwardEndpointRow.classList.toggle("hidden", !normalized);
     forwardEndpointHost.textContent = normalized ? new URL(normalized).host : "";
+    const setupUrl = normalizeSetupUrl(endpointSetupUrl) || normalized;
+    if (normalized && setupUrl) {
+      forwardEndpointHost.href = setupUrl;
+      forwardEndpointHost.title = setupUrl;
+    } else {
+      forwardEndpointHost.removeAttribute("href");
+      forwardEndpointHost.removeAttribute("title");
+    }
   }
 
   /** Normalize an endpoint URL: ensure protocol, strip trailing slash. */
@@ -483,7 +494,6 @@
     const dragHandle = document.createElement("span");
     dragHandle.className = "config-item-drag";
     dragHandle.draggable = true;
-    dragHandle.title = Save2TG.I18n.t("popup_dragReorder");
     dragHandle.setAttribute("aria-hidden", "true");
     dragHandle.innerHTML = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="5" cy="4" r="1"/><circle cx="11" cy="4" r="1"/><circle cx="5" cy="8" r="1"/><circle cx="11" cy="8" r="1"/><circle cx="5" cy="12" r="1"/><circle cx="11" cy="12" r="1"/></svg>';
 
@@ -504,7 +514,6 @@
     const deleteBtn = document.createElement("span");
     deleteBtn.className = "config-item-delete";
     deleteBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>';
-    deleteBtn.title = Save2TG.I18n.t("popup_delete");
     deleteBtn.setAttribute("aria-label", Save2TG.I18n.t("popup_delete"));
     deleteBtn.dataset.action = "delete-config";
     deleteBtn.dataset.configId = config.id;
@@ -1259,6 +1268,25 @@
   /** Return whether the queue item has meaningful phase progress to show. */
   function shouldShowQueuePercent(item) {
     return item.status === "sending" && (item.phase === "downloading" || item.phase === "uploading");
+  }
+
+  function normalizeSetupUrl(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return "";
+    }
+
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        return "";
+      }
+
+      url.hash = "";
+      return url.toString();
+    } catch (_) {
+      return "";
+    }
   }
 
   /** Get the current progress percentage for a queue item. */

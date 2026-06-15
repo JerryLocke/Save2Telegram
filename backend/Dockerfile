@@ -7,4 +7,4 @@ COPY package.json ./
 COPY *.js ./
 
 EXPOSE 3000
-CMD ["npm", "start"]
+ENTRYPOINT ["node", "server.js"]
