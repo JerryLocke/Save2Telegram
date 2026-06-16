@@ -17,19 +17,20 @@ class NodeForwardEndpoint extends ForwardEndpoint {
   async forward(payload, telegram, job = null) {
     const botToken = String(telegram?.botToken || "").trim();
     const chatId = String(telegram?.chatId || "").trim();
+    const signal = job?.abortController?.signal;
     if (!botToken || !chatId) {
       throw new AppError(Err.MISSING_CONFIG, "Missing Telegram Bot Token or Channel ID.");
     }
 
     updateJob(job, { phase: "validating", phaseProgress: 0, progress: 0 });
-    await validateTelegramChat(botToken, chatId);
+    await validateTelegramChat(botToken, chatId, signal);
     const tweetUrl = payload?.tweetUrl || "";
     const caption = payload.caption || buildCaption(payload);
     const mediaItems = payload.mediaItems || getPayloadMediaItems(payload);
 
     if (!mediaItems.length) {
       updateJob(job, { phase: "uploading", phaseProgress: 0, progress: 0 });
-      return sendTelegramMessage(botToken, chatId, caption || tweetUrl);
+      return sendTelegramMessage(botToken, chatId, caption || tweetUrl, signal);
     }
 
     if (mediaItems.length > 1) {
@@ -47,18 +48,18 @@ class NodeForwardEndpoint extends ForwardEndpoint {
         bytesTotal: videoFile.size || videoFile.blob.size || 0
       });
       return sendTelegramVideoFile(botToken, chatId, videoFile, caption, {
-        signal: job?.abortController?.signal,
+        signal,
         onUploadProgress: createJobUploadProgress(job)
       });
     }
 
     if (!media?.url || media.url.startsWith("blob:")) {
       updateJob(job, { phase: "uploading", phaseProgress: 0, progress: 0 });
-      return sendTelegramMessage(botToken, chatId, caption || tweetUrl);
+      return sendTelegramMessage(botToken, chatId, caption || tweetUrl, signal);
     }
 
     updateJob(job, { phase: "uploading", phaseProgress: 100, progress: 100 });
-    return sendTelegramPhoto(botToken, chatId, media.url, caption);
+    return sendTelegramPhoto(botToken, chatId, media.url, caption, signal);
   }
 }
 
@@ -97,8 +98,7 @@ async function forwardTelegramMediaGroup(botToken, chatId, payload, mediaItems, 
 
   if (!album.length) {
     checkCancelled(job);
-    const sig = job?.abortController?.signal;
-    return sendTelegramMessage(botToken, chatId, caption || payload?.tweetUrl || "", sig);
+    return sendTelegramMessage(botToken, chatId, caption || payload?.tweetUrl || "", job?.abortController?.signal);
   }
 
   if (album.length === 1) {
@@ -123,7 +123,7 @@ async function forwardTelegramMediaGroup(botToken, chatId, payload, mediaItems, 
 /** Send a single media item from an album, falling back to single-media API. */
 async function sendSingleAlbumItem(botToken, chatId, item, caption, form, job = null) {
   if (item.type === "photo") {
-    return sendTelegramPhoto(botToken, chatId, item.media, caption);
+    return sendTelegramPhoto(botToken, chatId, item.media, caption, job?.abortController?.signal);
   }
 
   const attachName = item.media.replace("attach://", "");

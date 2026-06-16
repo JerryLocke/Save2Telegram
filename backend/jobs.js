@@ -2,9 +2,13 @@ import { AppError, Err } from "./errors.js";
 import { readPersistedJobs, writePersistedJobs } from "./store.js";
 
 const JOB_TTL_MS = Math.max(60 * 1000, Number(process.env.JOB_TTL_MS || 30 * 60 * 1000));
+const MAX_CONCURRENT_FORWARD_JOBS = parsePositiveInteger(process.env.MAX_CONCURRENT_FORWARD_JOBS, 3);
 
 /** In-memory store of active forward jobs, keyed by job ID. */
 export const jobs = new Map();
+const queuedForwardJobs = [];
+const queuedForwardJobsById = new Map();
+const activeForwardJobIds = new Set();
 
 /** Load persisted jobs from disk on startup. */
 export async function loadJobs() {
@@ -72,36 +76,67 @@ export async function streamForward(res, payload, telegram, forwardEndpoint, uid
     : (payload?.payload || payload || {});
   const innerTelegram = telegram || payload?.telegram || {};
   const job = createForwardJob(innerPayload, innerTelegram, uid);
-  job.sendEvent = (event, data) => sendSse(res, event, data);
+  job.sendEvent = (event, data) => {
+    if (!sendSse(res, event, data)) {
+      job.sendEvent = null;
+    }
+  };
+  res.on?.("close", () => {
+    job.sendEvent = null;
+  });
   sendSse(res, "progress", serializeJob(job));
 
   try {
-    updateJob(job, { status: "sending", phase: "pending", progress: 0, phaseProgress: 0 });
-    const result = await forwardEndpoint.forward(innerPayload, innerTelegram, job);
-    updateJob(job, {
-      status: "sent",
-      phase: "sent",
-      progress: 100,
-      phaseProgress: 100,
-      result,
-      completedAt: Date.now()
-    });
-    sendSse(res, "result", { ok: true, result, job: serializeJob(job) });
-  } catch (error) {
-    console.error("Forward stream failed:", error);
-    updateJob(job, {
-      status: "error",
-      error: error instanceof AppError ? error : new AppError(Err.UNKNOWN, error.message || String(error)),
-      completedAt: Date.now()
-    });
-    sendSse(res, "error", { ok: false, error: job.error, job: serializeJob(job) });
+    await enqueueForwardJob(job, forwardEndpoint);
+    if (job.status === "sent") {
+      sendSse(res, "result", { ok: true, result: job.result, job: serializeJob(job) });
+    } else {
+      sendSse(res, "error", { ok: false, error: job.error || "Forward job did not complete.", job: serializeJob(job) });
+    }
   } finally {
     res.end();
   }
 }
 
+/** Queue a forward job and resolve after it reaches a terminal state. */
+export function enqueueForwardJob(job, forwardEndpoint) {
+  cleanupJobs();
+  return new Promise((resolve) => {
+    const entry = { job, forwardEndpoint, resolve };
+    queuedForwardJobs.push(entry);
+    queuedForwardJobsById.set(job.id, entry);
+    updateJob(job, { status: "pending", phase: "queued", progress: 0, phaseProgress: 0 });
+    drainForwardJobQueue();
+  });
+}
+
+/** Cancel a queued or active job and resolve any pending queue waiter. */
+export function cancelForwardJob(job, message = "Task cancelled by user.") {
+  if (!job) {
+    return null;
+  }
+
+  job.abortController?.abort();
+  job.cancelled = true;
+  updateJob(job, { status: "cancelled", error: message, completedAt: Date.now() });
+
+  const queued = queuedForwardJobsById.get(job.id);
+  if (queued) {
+    queuedForwardJobsById.delete(job.id);
+    queued.resolve?.(job);
+    drainForwardJobQueue();
+  }
+
+  return job;
+}
+
 /** Execute a forward job asynchronously, updating status as stages complete. */
 export async function runForwardJob(job, forwardEndpoint) {
+  if (job?.cancelled || job?.abortController?.signal?.aborted || job?.status === "cancelled") {
+    updateJob(job, { status: "cancelled", error: "Task cancelled by user.", completedAt: Date.now() });
+    return;
+  }
+
   updateJob(job, { status: "sending", phase: "pending", progress: 0, phaseProgress: 0 });
   try {
     const result = await forwardEndpoint.forward(job.payload, job.telegram, job);
@@ -115,11 +150,37 @@ export async function runForwardJob(job, forwardEndpoint) {
     });
   } catch (error) {
     console.error("Forward job failed:", error);
+    const appError = error instanceof AppError ? error : new AppError(Err.UNKNOWN, error.message || String(error));
     updateJob(job, {
-      status: "error",
-      error: error instanceof AppError ? error : new AppError(Err.UNKNOWN, error.message || String(error)),
+      status: job?.cancelled || appError.code === Err.CANCELLED ? "cancelled" : "error",
+      error: appError,
       completedAt: Date.now()
     });
+  }
+}
+
+function drainForwardJobQueue() {
+  while (activeForwardJobIds.size < MAX_CONCURRENT_FORWARD_JOBS && queuedForwardJobs.length) {
+    const item = queuedForwardJobs.shift();
+    if (!item?.job) {
+      continue;
+    }
+    if (queuedForwardJobsById.get(item.job.id) !== item) {
+      continue;
+    }
+    queuedForwardJobsById.delete(item.job.id);
+    runQueuedForwardJob(item);
+  }
+}
+
+async function runQueuedForwardJob({ job, forwardEndpoint, resolve }) {
+  activeForwardJobIds.add(job.id);
+  try {
+    await runForwardJob(job, forwardEndpoint);
+  } finally {
+    activeForwardJobIds.delete(job.id);
+    resolve?.(job);
+    drainForwardJobQueue();
   }
 }
 
@@ -179,11 +240,25 @@ export function serializeJob(job) {
 export function cleanupJobs() {
   const expiresBefore = Date.now() - JOB_TTL_MS;
   for (const [id, job] of jobs.entries()) {
+    if (isLiveJob(job)) {
+      continue;
+    }
     if ((job.updatedAt || job.completedAt || job.createdAt) < expiresBefore) {
       jobs.delete(id);
     }
   }
   persistJobs();
+}
+
+function isLiveJob(job) {
+  return !job?.completedAt &&
+    !job?.cancelled &&
+    (job?.status === "pending" || job?.status === "sending" || activeForwardJobIds.has(job?.id));
+}
+
+function parsePositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : fallback;
 }
 
 /** Clamp a progress value to 0-100. */
@@ -200,8 +275,17 @@ export function checkCancelled(job) {
 
 /** Send a Server-Sent Events frame (event + data) over the HTTP response. */
 function sendSse(res, event, data) {
-  res.write(`event: ${event}\n`);
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
+  if (!res || res.destroyed || res.writableEnded) {
+    return false;
+  }
+
+  try {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Serialize a job for disk persistence (strip runtime objects). */

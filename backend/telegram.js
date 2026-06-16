@@ -4,6 +4,10 @@ const TELEGRAM_API_BASE = "https://api.telegram.org";
 const TELEGRAM_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const TELEGRAM_UPLOAD_RETRIES = Math.max(0, Number(process.env.TELEGRAM_UPLOAD_RETRIES || 2));
 const TELEGRAM_RETRY_BASE_DELAY_MS = 1200;
+const TELEGRAM_SEND_MIN_INTERVAL_MS = Math.max(0, Number(process.env.TELEGRAM_SEND_MIN_INTERVAL_MS || 1250));
+const telegramSendQueuesByChat = new Map();
+const telegramLastSendAtByChat = new Map();
+const telegramRetryAfterUntilByChat = new Map();
 
 /** Verify a Telegram chat exists and the bot has access. Throws on failure. */
 export async function validateTelegramChat(botToken, chatId, signal) {
@@ -51,14 +55,15 @@ export async function sendTelegramMessage(botToken, chatId, text, signal) {
 
 /** Call a Telegram Bot API JSON method. */
 async function callTelegram(botToken, method, body, signal) {
-  const response = await fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {
+  const response = await runTelegramSendQueued(body?.chat_id, signal, () => fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     signal,
     body: JSON.stringify(body)
-  });
+  }));
   const data = await response.json().catch(() => null);
   if (!response.ok || !data?.ok) {
+    rememberTelegramRetryAfter(body?.chat_id, getTelegramRetryAfter(data));
     throw createTelegramApiError(response, data);
   }
   return data.result;
@@ -73,35 +78,42 @@ export async function callTelegramMultipart(botToken, method, body, options = {}
   for (let attempt = 0; attempt <= TELEGRAM_UPLOAD_RETRIES; attempt += 1) {
     throwIfAborted(cancelSignal);
 
-    const controller = new AbortController();
     let timedOut = false;
-    const timeoutId = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, TELEGRAM_UPLOAD_TIMEOUT_MS);
+    let timeoutId = null;
+    let controller = null;
     const abortUpload = () => {
-      clearTimeout(timeoutId);
-      controller.abort();
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      controller?.abort();
     };
     cancelSignal?.addEventListener?.("abort", abortUpload, { once: true });
 
     try {
-      const multipart = createMultipartBody(body, onUploadProgress);
-      const response = await fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": multipart.contentType,
-          "Content-Length": String(multipart.contentLength)
-        },
-        body: multipart.body,
-        duplex: "half",
-        signal: controller.signal
+      const response = await runTelegramSendQueued(body.get("chat_id"), cancelSignal, () => {
+        controller = new AbortController();
+        timeoutId = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, TELEGRAM_UPLOAD_TIMEOUT_MS);
+        const multipart = createMultipartBody(body, onUploadProgress);
+        return fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": multipart.contentType,
+            "Content-Length": String(multipart.contentLength)
+          },
+          body: multipart.body,
+          duplex: "half",
+          signal: controller.signal
+        });
       });
 
       const data = await response.json().catch(() => null);
       if (!response.ok || !data?.ok) {
         const retryAfter = getTelegramRetryAfter(data);
-        if (shouldRetryTelegramResponse(response, attempt)) {
+        rememberTelegramRetryAfter(body.get("chat_id"), retryAfter);
+        if (!retryAfter && shouldRetryTelegramResponse(response, attempt)) {
           lastError = createTelegramApiError(response, data);
           await waitForRetry(attempt, cancelSignal, retryAfter);
           continue;
@@ -131,7 +143,9 @@ export async function callTelegramMultipart(botToken, method, body, options = {}
 
       throw new AppError(Err.TELEGRAM_API_ERROR, `Telegram upload failed: ${describeUploadError(error)}`);
     } finally {
-      clearTimeout(timeoutId);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
       cancelSignal?.removeEventListener?.("abort", abortUpload);
     }
   }
@@ -149,6 +163,56 @@ function throwIfAborted(signal) {
   if (signal?.aborted) {
     throw new AppError(Err.CANCELLED, "Task cancelled by user.");
   }
+}
+
+/** Serialize Telegram send calls per chat and keep a small gap between sends. */
+async function runTelegramSendQueued(chatId, signal, operation) {
+  const key = String(chatId || "").trim();
+  if (!key) {
+    return operation();
+  }
+
+  const previous = telegramSendQueuesByChat.get(key) || Promise.resolve();
+  const run = previous.catch(() => { }).then(async () => {
+    throwIfAborted(signal);
+    const cooldownUntil = Number(telegramRetryAfterUntilByChat.get(key) || 0);
+    const cooldownWaitMs = Math.max(0, cooldownUntil - Date.now());
+    if (cooldownWaitMs > 0) {
+      throw createTelegramFloodControlError(Math.ceil(cooldownWaitMs / 1000));
+    }
+    const lastSendAt = Number(telegramLastSendAtByChat.get(key) || 0);
+    const waitMs = Math.max(0, lastSendAt + TELEGRAM_SEND_MIN_INTERVAL_MS - Date.now());
+    if (waitMs > 0) {
+      await sleepWithAbort(waitMs, signal);
+    }
+    telegramLastSendAtByChat.set(key, Date.now());
+    return operation();
+  });
+  const queued = run.finally(() => {
+    if (telegramSendQueuesByChat.get(key) === queued) {
+      telegramSendQueuesByChat.delete(key);
+    }
+  });
+  telegramSendQueuesByChat.set(key, queued);
+  return queued;
+}
+
+function rememberTelegramRetryAfter(chatId, retryAfter) {
+  const key = String(chatId || "").trim();
+  const seconds = Number(retryAfter || 0);
+  if (!key || !Number.isFinite(seconds) || seconds <= 0) {
+    return;
+  }
+
+  const until = Date.now() + (Math.ceil(seconds) * 1000);
+  telegramRetryAfterUntilByChat.set(key, Math.max(Number(telegramRetryAfterUntilByChat.get(key) || 0), until));
+}
+
+function createTelegramFloodControlError(retryAfter) {
+  return new AppError(Err.TELEGRAM_API_ERROR, `Telegram flood control: retry manually after ${retryAfter}s`, {
+    retryAfter,
+    telegramStatus: 429
+  });
 }
 
 /** Return true for transient Telegram responses that are safe to retry automatically. */
@@ -176,6 +240,11 @@ function waitForRetry(attempt, signal, retryAfter = 0) {
   const delay = retryAfter > 0
     ? (retryAfter * 1000) + 1000
     : TELEGRAM_RETRY_BASE_DELAY_MS * (2 ** attempt);
+  return sleepWithAbort(delay, signal);
+}
+
+/** Sleep while preserving cancellation semantics. */
+function sleepWithAbort(delay, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(new AppError(Err.CANCELLED, "Task cancelled by user."));

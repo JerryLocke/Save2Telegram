@@ -59,7 +59,9 @@ export async function downloadTwitterVideo(payload, job = null, progressScope = 
       const blob = await fetchVideoBlob(candidate, createJobDownloadProgress(job, progressScope), signal);
       return { blob, size: blob.size, filename: "twitter-video.mp4" };
     } catch (error) {
-      if (error.message === "Task cancelled by user") throw error;
+      if (signal?.aborted || error?.name === "AbortError" || error?.code === Err.CANCELLED || error?.message === "Task cancelled by user.") {
+        throw new AppError(Err.CANCELLED, "Task cancelled by user.");
+      }
       errors.push(error.message || String(error));
     }
   }
@@ -145,7 +147,7 @@ async function downloadM3u8Video(url, job = null, progressScope = {}) {
     throw new AppError(Err.UNSUPPORTED_FORMAT, "This video uses separate HLS audio/video streams; the backend does not merge them into MP4 yet.");
   }
 
-  const mediaPlaylist = mediaPlaylistUrl === url ? playlist : await fetchText(mediaPlaylistUrl);
+  const mediaPlaylist = mediaPlaylistUrl === url ? playlist : await fetchText(mediaPlaylistUrl, signal);
   const parts = parseMediaPlaylist(mediaPlaylistUrl, mediaPlaylist);
   if (!parts.length) {
     throw new AppError(Err.DOWNLOAD_FAILED, "No HLS video segments were found.");

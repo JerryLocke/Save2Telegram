@@ -19,12 +19,17 @@ importScripts('lib/i18n.js');
   const VIDEO_HOST_PATTERN = /^https:\/\/video\.twimg\.com\//;
   const MAX_CAPTURED_VIDEO_URLS_PER_TAB = 80;
   const TELEGRAM_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+  const TELEGRAM_SEND_MIN_INTERVAL_MS = 1250;
   const FORWARD_ENDPOINT_BINDING_TIMEOUT_MS = 2 * 60 * 1000;
   const MAX_CONCURRENT_FORWARD_TASKS = 3;
+  const RETRY_SEND_DELAY_MS = 1500;
   let queueProcessingPromise = null;
   let queueUpdatePromise = Promise.resolve();
   const activeQueueItemIds = new Set();
   const activeQueueChatKeys = new Set();
+  const activeQueueAbortControllers = new Map();
+  const telegramSendQueuesByChat = new Map();
+  const telegramLastSendAtByChat = new Map();
   const capturedVideoUrlsByTab = new Map();
   const pendingForwardEndpointBindings = new Map();
   // ==================== Architecture ====================
@@ -47,6 +52,12 @@ importScripts('lib/i18n.js');
     );
   }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === "GET_CAPTURED_VIDEO_CANDIDATES") {
+      const tabId = _sender?.tab?.id;
+      const capturedUrls = Number.isInteger(tabId) ? (capturedVideoUrlsByTab.get(tabId) || []) : [];
+      sendResponse({ ok: true, result: capturedUrls });
+      return false;
+    }
     if (message?.type === "FORWARD_TWITTER_MEDIA") {
       enqueueForward(message.payload, _sender, message.configId)
         .then((item) => sendResponse({ ok: true, result: item }))
@@ -593,6 +604,22 @@ importScripts('lib/i18n.js');
     return String(item?.telegramChatKey || "").trim() ||
       (item?.telegramConfigId ? `config:${item.telegramConfigId}` : "");
   }
+  function getQueueChatCooldownUntil(queue, chatKey, now = Date.now()) {
+    if (!chatKey) {
+      return 0;
+    }
+    return queue.reduce((until, item) => {
+      if (getQueueItemChatKey(item) !== chatKey) {
+        return until;
+      }
+      const retryAfterUntil = Number(item.retryAfterUntil || 0);
+      return retryAfterUntil > now ? Math.max(until, retryAfterUntil) : until;
+    }, 0);
+  }
+  function getFloodControlRetryMessage(retryAfterUntil, now = Date.now()) {
+    const waitSeconds = Math.max(1, Math.ceil((Number(retryAfterUntil || 0) - now) / 1000));
+    return `Telegram flood control: retry manually after ${waitSeconds}s`;
+  }
   function createTelegramConfigId() {
     return `tg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
@@ -643,6 +670,17 @@ importScripts('lib/i18n.js');
     if (!id) {
       throw new Error("Missing queue item ID.");
     }
+    const queue = await getQueue();
+    const currentItem = queue.find((item) => item.id === id);
+    const retryAfterUntil = Number(currentItem?.retryAfterUntil || 0);
+    if (retryAfterUntil > Date.now()) {
+      const message = getFloodControlRetryMessage(retryAfterUntil);
+      await markQueueItem(id, {
+        lastError: message,
+        updatedAt: Date.now()
+      });
+      throw new Error(message);
+    }
     await updateQueue((queue) => queue.map((item) => {
       if (item.id !== id) {
         return item;
@@ -654,21 +692,26 @@ importScripts('lib/i18n.js');
         progress: 0,
         phaseProgress: 0,
         lastError: "",
+        retryAfterUntil: 0,
+        retryNotBefore: Date.now() + RETRY_SEND_DELAY_MS,
         remoteJobId: "",
         updatedAt: Date.now()
       };
     }));
     processQueue();
+    setTimeout(processQueue, RETRY_SEND_DELAY_MS + 50);
     return getVisibleQueue();
   }
   /** Remove a queue item by ID. */
   async function removeQueueItem(id) {
+    activeQueueAbortControllers.get(id)?.abort();
     await updateQueue((queue) => queue.filter((item) => item.id !== id));
     return getVisibleQueue();
   }
   /** Cancel a queued forward: remove from queue and notify remote endpoint if applicable. */
   async function cancelForwardQueueItem(id) {
     if (!id) throw new Error("Missing queue item ID.");
+    activeQueueAbortControllers.get(id)?.abort();
     const queue = await getQueue();
     const item = queue.find(i => i.id === id);
     const remoteJobId = item?.remoteJobId;
@@ -683,7 +726,8 @@ importScripts('lib/i18n.js');
         } catch (_) { }
       }
     }
-    return updateQueue((q) => q.filter((entry) => entry.id !== id));
+    await updateQueue((q) => q.filter((entry) => entry.id !== id));
+    return getVisibleQueue();
   }
   /** Ensure the queue scheduler is running (singleton). */
   async function processQueue() {
@@ -722,7 +766,7 @@ importScripts('lib/i18n.js');
     }
 
     while (activeQueueItemIds.size < MAX_CONCURRENT_FORWARD_TASKS) {
-      const queue = await getQueue();
+      const queue = await failCooldownBlockedPendingQueueItems();
       const item = findNextRunnableQueueItem(queue);
       if (!item) {
         break;
@@ -743,18 +787,70 @@ importScripts('lib/i18n.js');
         });
     }
   }
+  async function failCooldownBlockedPendingQueueItems() {
+    const now = Date.now();
+    const currentQueue = await getQueue();
+    if (!hasCooldownBlockedPendingQueueItems(currentQueue, now)) {
+      return currentQueue;
+    }
+    return updateQueue((queue) => {
+      let changed = false;
+      const nextQueue = queue.map((item) => {
+        if (item.status !== "pending") {
+          return item;
+        }
+        const chatKey = getQueueItemChatKey(item);
+        const retryAfterUntil = getQueueChatCooldownUntil(queue, chatKey, now);
+        if (!chatKey || retryAfterUntil <= now) {
+          return item;
+        }
+        const message = getFloodControlRetryMessage(retryAfterUntil, now);
+        changed = true;
+        return {
+          ...item,
+          status: "error",
+          phase: item.phase || "pending",
+          lastError: message,
+          retryAfterUntil,
+          retryNotBefore: 0,
+          debugLog: appendDebugLog(item.debugLog, `Failed: ${message}`),
+          updatedAt: now
+        };
+      });
+      return changed ? nextQueue : queue;
+    });
+  }
+  function hasCooldownBlockedPendingQueueItems(queue, now = Date.now()) {
+    return queue.some((item) => {
+      if (item.status !== "pending") {
+        return false;
+      }
+      const chatKey = getQueueItemChatKey(item);
+      return Boolean(chatKey) && getQueueChatCooldownUntil(queue, chatKey, now) > now;
+    });
+  }
   function findNextRunnableQueueItem(queue) {
+    const now = Date.now();
     return queue.find((entry) => {
       if (entry.status !== "pending" || activeQueueItemIds.has(entry.id)) {
         return false;
       }
+      if (Number(entry.retryNotBefore || 0) > now) {
+        return false;
+      }
       const chatKey = getQueueItemChatKey(entry);
-      return !chatKey || !activeQueueChatKeys.has(chatKey);
+      if (!chatKey) {
+        return true;
+      }
+      return !activeQueueChatKeys.has(chatKey) &&
+        getQueueChatCooldownUntil(queue, chatKey, now) <= now;
     });
   }
   /** Process one queue item. Multiple instances may run in parallel. */
   async function runQueueItem(item) {
     const attempt = (item.attempts || 0) + 1;
+    const abortController = new AbortController();
+    activeQueueAbortControllers.set(item.id, abortController);
     const claimedQueue = await updateQueue((queue) => queue.map((entry) => (
       entry.id === item.id && entry.status === "pending" ? {
         ...entry,
@@ -766,18 +862,25 @@ importScripts('lib/i18n.js');
         bytesLoaded: 0,
         bytesTotal: 0,
         lastError: "",
+        retryNotBefore: 0,
         debugLog: appendDebugLog(entry.debugLog, `Processing, attempt ${attempt}`),
         updatedAt: Date.now()
       } : entry
     )));
     const claimedItem = claimedQueue.find((entry) => entry.id === item.id);
     if (!claimedItem || claimedItem.status !== "sending" || claimedItem.attempts !== attempt) {
+      activeQueueAbortControllers.delete(item.id);
       return;
     }
 
     try {
       const endpoint = await createForwardEndpoint();
-      await endpoint.forward(claimedItem.payload, claimedItem.id, claimedItem.telegramConfigId);
+      await endpoint.forward(claimedItem.payload, claimedItem.id, claimedItem.telegramConfigId, {
+        signal: abortController.signal
+      });
+      if (!(await queueHasItem(claimedItem.id))) {
+        return;
+      }
       debugLog(claimedItem.id, "Queue item sent; marking as sent");
       if ((await getGeneralSettings()).keepCompletedItems) {
         await markQueueItem(claimedItem.id, {
@@ -793,20 +896,29 @@ importScripts('lib/i18n.js');
         await removeQueueItem(claimedItem.id);
       }
     } catch (error) {
+      if (!(await queueHasItem(claimedItem.id))) {
+        return;
+      }
       debugError(claimedItem.id, "Queue item failed", error);
       const lastError = getQueueErrorMessage(error);
       await appendQueueDebugLog(claimedItem.id, `Failed: ${lastError}`);
       await markQueueItem(claimedItem.id, {
         status: "error",
         lastError,
+        retryAfterUntil: getRetryAfterUntil(error),
         updatedAt: Date.now()
       });
+    } finally {
+      activeQueueAbortControllers.delete(item.id);
     }
   }
   /** Read the full forward queue from chrome.storage.local. */
   async function getQueue() {
     const data = await chrome.storage.local.get(QUEUE_KEY);
     return Array.isArray(data[QUEUE_KEY]) ? data[QUEUE_KEY] : [];
+  }
+  async function queueHasItem(id) {
+    return (await getQueue()).some((item) => item.id === id);
   }
   async function getVisibleQueue() {
     const [queue, settings] = await Promise.all([getQueue(), getGeneralSettings()]);
@@ -906,26 +1018,26 @@ importScripts('lib/i18n.js');
   /** Forward endpoint that communicates directly with the Telegram Bot API. */
   class LocalForwardEndpoint extends ForwardEndpoint {
     /** Forward tweet media via local Telegram API calls. */
-    async forward(payload, queueItemId, configId = "") {
-      return forwardTwitterMediaLocal(this, payload, queueItemId, configId);
+    async forward(payload, queueItemId, configId = "", options = {}) {
+      return forwardTwitterMediaLocal(this, payload, queueItemId, configId, options);
     }
-    async validateChat(botToken, chatId) {
-      return validateTelegramChat(botToken, chatId);
+    async validateChat(botToken, chatId, signal = null) {
+      return validateTelegramChat(botToken, chatId, signal);
     }
-    async downloadVideo(payload, queueItemId, progressScope = {}) {
-      return downloadTwitterVideo(payload, queueItemId, progressScope);
+    async downloadVideo(payload, queueItemId, progressScope = {}, signal = null) {
+      return downloadTwitterVideo(payload, queueItemId, progressScope, signal);
     }
-    async sendPhoto(botToken, chatId, photo, caption, queueItemId = "") {
-      return sendTelegramPhoto(botToken, chatId, photo, caption, queueItemId);
+    async sendPhoto(botToken, chatId, photo, caption, queueItemId = "", signal = null) {
+      return sendTelegramPhoto(botToken, chatId, photo, caption, queueItemId, signal);
     }
-    async sendVideoFile(botToken, chatId, videoFile, caption, queueItemId = "") {
-      return sendTelegramVideoFile(botToken, chatId, videoFile, caption, queueItemId);
+    async sendVideoFile(botToken, chatId, videoFile, caption, queueItemId = "", signal = null) {
+      return sendTelegramVideoFile(botToken, chatId, videoFile, caption, queueItemId, signal);
     }
-    async sendMessage(botToken, chatId, text, queueItemId = "") {
-      return sendTelegramMessage(botToken, chatId, text, queueItemId);
+    async sendMessage(botToken, chatId, text, queueItemId = "", signal = null) {
+      return sendTelegramMessage(botToken, chatId, text, queueItemId, signal);
     }
-    async callMultipart(botToken, method, body, queueItemId = "") {
-      return callTelegramMultipartLogged(botToken, method, body, queueItemId);
+    async callMultipart(botToken, method, body, queueItemId = "", signal = null) {
+      return callTelegramMultipartLogged(botToken, method, body, queueItemId, signal);
     }
   }
   /** Forward endpoint that communicates via a remote Node.js backend over SSE. */
@@ -942,7 +1054,7 @@ importScripts('lib/i18n.js');
        *   - Old expired jobs (404) report an error; users can retry from the popup to clear remoteJobId.
        */
     /** Forward tweet media via local Telegram API calls. */
-    async forward(payload, queueItemId, configId = "") {
+    async forward(payload, queueItemId, configId = "", options = {}) {
       const endpointUrl = this.settings.endpointUrl;
       const config = await getTelegramConfigForSend(configId);
       const caption = buildCaption(payload);
@@ -962,7 +1074,7 @@ importScripts('lib/i18n.js');
       const item = queue.find(i => i.id === queueItemId);
       const existingJobId = item?.remoteJobId;
       if (existingJobId) {
-        const resumed = await this._tryResumeJob(endpointUrl, existingJobId, queueItemId);
+        const resumed = await this._tryResumeJob(endpointUrl, existingJobId, queueItemId, options.signal);
         if (resumed !== null) return resumed;
         // Old job expired -> report error, do not auto-rebuild, user can retry manually in popup
         throw new Error(`Previous job ${existingJobId} has expired. Please retry manually in the popup`);
@@ -970,12 +1082,12 @@ importScripts('lib/i18n.js');
       // 2) No old job, create new SSE connection
       let jobId = null;
       try {
-        jobId = await this._streamWithSse(endpointUrl, requestBody, queueItemId);
+        jobId = await this._streamWithSse(endpointUrl, requestBody, queueItemId, options.signal);
       } catch (sseError) {
         jobId = sseError.jobId || jobId;
         if (sseError.message === "_SSE_STREAM_ENDED_") {
           if (jobId) {
-            await this._pollJob(endpointUrl, jobId, queueItemId);
+            await this._pollJob(endpointUrl, jobId, queueItemId, options.signal);
           } else {
             throw new Error("SSE connection lost and unable to retrieve job ID");
           }
@@ -985,26 +1097,45 @@ importScripts('lib/i18n.js');
       }
     }
     /** Try to resume an existing backend task. Returns null if expired and needs rebuild */
-    async _tryResumeJob(endpointUrl, jobId, queueItemId) {
+    async _tryResumeJob(endpointUrl, jobId, queueItemId, signal = null) {
       const res = await fetch(`${endpointUrl}/api/forward-jobs/${encodeURIComponent(jobId)}`, {
-        headers: getEndpointAuthHeaders(this.settings)
+        headers: getEndpointAuthHeaders(this.settings),
+        signal
       });
-      if (res.status === 404) return null;
-      if (!res.ok) return null;
+      if (res.status === 404) {
+        await markQueueItem(queueItemId, { remoteJobId: "", updatedAt: Date.now() });
+        return null;
+      }
+      if (!res.ok) {
+        throw new Error(`Progress query failed: ${res.status}`);
+      }
       const data = await res.json().catch(() => null);
-      if (!data?.ok || !data?.job) return null;
+      if (!data?.ok || !data?.job) {
+        throw new Error("Progress response malformed");
+      }
       const job = data.job;
       if (job.status === "sent") return job.result;
-      if (job.status === "error") { const err = new Error(job.error || "Backend forward failed"); err.code = job.errorCode || "TELEGRAM_API_ERROR"; err.retryAfter = Number(job.retryAfter || 0); throw err; }
-      await this._pollJob(endpointUrl, jobId, queueItemId);
+      if (job.status === "cancelled") {
+        await markQueueItem(queueItemId, { remoteJobId: "", updatedAt: Date.now() });
+        throw createCancelledError();
+      }
+      if (job.status === "error") {
+        await markQueueItem(queueItemId, { remoteJobId: "", updatedAt: Date.now() });
+        const err = new Error(job.error || "Backend forward failed");
+        err.code = job.errorCode || "TELEGRAM_API_ERROR";
+        err.retryAfter = Number(job.retryAfter || 0);
+        throw err;
+      }
+      await this._pollJob(endpointUrl, jobId, queueItemId, signal);
       return undefined;
     }
     /** Establish SSE connection via POST /api/forward, read progress events, return backend-assigned job.id */
-    async _streamWithSse(endpointUrl, requestBody, queueItemId) {
+    async _streamWithSse(endpointUrl, requestBody, queueItemId, signal = null) {
       const response = await fetch(`${endpointUrl}/api/forward`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getEndpointAuthHeaders(this.settings) },
-        body: JSON.stringify(requestBody)
+        body: JSON.stringify(requestBody),
+        signal
       });
       if (!response.ok || !response.body) {
         throw new Error(`SSE connection failed: ${response.status}`);
@@ -1036,6 +1167,7 @@ importScripts('lib/i18n.js');
           } else if (event === "result") {
             return jobId;
           } else if (event === "error") {
+            await markQueueItem(queueItemId, { remoteJobId: "", updatedAt: Date.now() });
             const err = new Error(data?.error || "Backend forward failed");
             err.code = data?.code || "TELEGRAM_API_ERROR";
             err.retryAfter = Number(data?.retryAfter || data?.job?.retryAfter || 0);
@@ -1065,13 +1197,14 @@ importScripts('lib/i18n.js');
       }
       return { events, remainder };
     }
-    async _pollJob(endpointUrl, jobId, queueItemId) {
+    async _pollJob(endpointUrl, jobId, queueItemId, signal = null) {
       const POLL_INTERVAL_MS = 800;
       const MAX_POLLS = 2250;
       for (let i = 0; i < MAX_POLLS; i++) {
-        await sleep(POLL_INTERVAL_MS);
+        await sleep(POLL_INTERVAL_MS, signal);
         const res = await fetch(`${endpointUrl}/api/forward-jobs/${encodeURIComponent(jobId)}`, {
-          headers: getEndpointAuthHeaders(this.settings)
+          headers: getEndpointAuthHeaders(this.settings),
+          signal
         });
         if (!res.ok) throw new Error(`Progress query failed: ${res.status}`);
         const data = await res.json().catch(() => null);
@@ -1086,7 +1219,17 @@ importScripts('lib/i18n.js');
           updatedAt: Date.now()
         });
         if (job.status === "sent") return job.result;
-        if (job.status === "error") { const err = new Error(job.error || "Backend forward failed"); err.code = job.errorCode || "TELEGRAM_API_ERROR"; err.retryAfter = Number(job.retryAfter || 0); throw err; }
+        if (job.status === "cancelled") {
+          await markQueueItem(queueItemId, { remoteJobId: "", updatedAt: Date.now() });
+          throw createCancelledError();
+        }
+        if (job.status === "error") {
+          await markQueueItem(queueItemId, { remoteJobId: "", updatedAt: Date.now() });
+          const err = new Error(job.error || "Backend forward failed");
+          err.code = job.errorCode || "TELEGRAM_API_ERROR";
+          err.retryAfter = Number(job.retryAfter || 0);
+          throw err;
+        }
       }
       throw new Error(`Job ${jobId} timed out (30 min). You can query it by this ID on the backend`);
     }
@@ -1104,24 +1247,25 @@ importScripts('lib/i18n.js');
     return key ? { "Authorization": `Bearer ${key}` } : {};
   }
   /** Forward tweet media through a local endpoint, handling photos, videos, and media groups. */
-  async function forwardTwitterMediaLocal(endpoint, payload, queueItemId, configId = "") {
+  async function forwardTwitterMediaLocal(endpoint, payload, queueItemId, configId = "", options = {}) {
+    const signal = options?.signal || null;
     const config = await getTelegramConfigForSend(configId);
     const { botToken, chatId } = config;
     if (!botToken || !chatId) {
       throw new Error(__t("bg_configureFirst"));
     }
-    const configLabel = getTelegramConfigLabel(config); try { await endpoint.validateChat(botToken, chatId); } catch (validateError) { throw new Error(`Channel "${configLabel}" validation failed: ${validateError.message}`); }
+    const configLabel = getTelegramConfigLabel(config); try { await endpoint.validateChat(botToken, chatId, signal); } catch (validateError) { throw new Error(`Channel "${configLabel}" validation failed: ${validateError.message}`); }
     const tweetUrl = payload?.tweetUrl || "";
     const caption = buildCaption(payload);
     const mediaItems = getPayloadMediaItems(payload);
     await appendQueueDebugLog(queueItemId, `Parsed media: ${mediaItems.length} item(s)`);
     if (!mediaItems.length) {
       await appendQueueDebugLog(queueItemId, "No media, sending text message");
-      return endpoint.sendMessage(botToken, chatId, caption || tweetUrl, queueItemId);
+      return endpoint.sendMessage(botToken, chatId, caption || tweetUrl, queueItemId, signal);
     }
     if (mediaItems.length > 1) {
       await appendQueueDebugLog(queueItemId, "Sending media group");
-      return forwardTelegramMediaGroup(endpoint, botToken, chatId, payload, mediaItems, caption, queueItemId);
+      return forwardTelegramMediaGroup(endpoint, botToken, chatId, payload, mediaItems, caption, queueItemId, signal);
     }
     const media = mediaItems[0];
     if (media?.type === "video") {
@@ -1129,16 +1273,16 @@ importScripts('lib/i18n.js');
       const videoFile = await endpoint.downloadVideo({ ...payload, media }, queueItemId, {
         itemIndex: 0,
         itemTotal: 1
-      });
+      }, signal);
       await markTelegramUploadProgress(queueItemId, videoFile);
-      return endpoint.sendVideoFile(botToken, chatId, videoFile, caption, queueItemId);
+      return endpoint.sendVideoFile(botToken, chatId, videoFile, caption, queueItemId, signal);
     }
     if (!media?.url || media.url.startsWith("blob:")) {
       await appendQueueDebugLog(queueItemId, "Media URL cannot be sent directly, falling back to text message");
-      return endpoint.sendMessage(botToken, chatId, caption || tweetUrl, queueItemId);
+      return endpoint.sendMessage(botToken, chatId, caption || tweetUrl, queueItemId, signal);
     }
     await appendQueueDebugLog(queueItemId, "Sending photo URL");
-    return endpoint.sendPhoto(botToken, chatId, media.url, caption, queueItemId);
+    return endpoint.sendPhoto(botToken, chatId, media.url, caption, queueItemId, signal);
   }
   /** Extract and filter media items (photo/video) from a tweet payload. */
   function getPayloadMediaItems(payload) {
@@ -1147,7 +1291,7 @@ importScripts('lib/i18n.js');
     return items.filter((item) => item?.type === "photo" || item?.type === "video");
   }
   /** Send multiple media items as a Telegram album via the endpoint. */
-  async function forwardTelegramMediaGroup(endpoint, botToken, chatId, payload, mediaItems, caption, queueItemId) {
+  async function forwardTelegramMediaGroup(endpoint, botToken, chatId, payload, mediaItems, caption, queueItemId, signal = null) {
     const form = new FormData();
     const album = [];
     let attachmentIndex = 0;
@@ -1165,7 +1309,7 @@ importScripts('lib/i18n.js');
         const videoFile = await endpoint.downloadVideo({ ...payload, media: item }, queueItemId, {
           itemIndex: attachmentIndex,
           itemTotal: downloadableVideos.length || 1
-        });
+        }, signal);
         downloadedFiles.push(videoFile);
         await markDownloadedFilesSize(queueItemId, downloadedFiles);
         const attachmentName = `video${attachmentIndex}`;
@@ -1181,11 +1325,11 @@ importScripts('lib/i18n.js');
     await markTelegramUploadProgress(queueItemId);
     if (!album.length) {
       await appendQueueDebugLog(queueItemId, "Media group empty, falling back to text message");
-      return endpoint.sendMessage(botToken, chatId, caption || payload?.tweetUrl || "", queueItemId);
+      return endpoint.sendMessage(botToken, chatId, caption || payload?.tweetUrl || "", queueItemId, signal);
     }
     if (album.length === 1) {
       await appendQueueDebugLog(queueItemId, "Media group has only one item, sending as single media");
-      return sendSingleAlbumItem(endpoint, botToken, chatId, album[0], caption, form, queueItemId);
+      return sendSingleAlbumItem(endpoint, botToken, chatId, album[0], caption, form, queueItemId, signal);
     }
     // Telegram captions albums on individual items; put the tweet caption on the first item only.
     if (caption) {
@@ -1195,19 +1339,19 @@ importScripts('lib/i18n.js');
     form.set("chat_id", chatId);
     form.set("media", JSON.stringify(album));
     await appendQueueDebugLog(queueItemId, `Uploading Telegram media group, ${album.length} item(s)`);
-    return endpoint.callMultipart(botToken, "sendMediaGroup", form, queueItemId);
+    return endpoint.callMultipart(botToken, "sendMediaGroup", form, queueItemId, signal);
   }
   /** Send a single media item that was part of a group, using the appropriate API. */
-  async function sendSingleAlbumItem(endpoint, botToken, chatId, item, caption, form, queueItemId) {
+  async function sendSingleAlbumItem(endpoint, botToken, chatId, item, caption, form, queueItemId, signal = null) {
     if (item.type === "photo") {
-      return endpoint.sendPhoto(botToken, chatId, item.media, caption, queueItemId);
+      return endpoint.sendPhoto(botToken, chatId, item.media, caption, queueItemId, signal);
     }
     const attachName = item.media.replace("attach://", "");
     const file = form.get(attachName);
     return endpoint.sendVideoFile(botToken, chatId, {
       blob: file,
       filename: file?.name || "twitter-video.mp4"
-    }, caption, queueItemId);
+    }, caption, queueItemId, signal);
   }
   /** Update queue item state for the upload phase. */
   async function markTelegramUploadProgress(queueItemId, videoFile = null) {
@@ -1238,7 +1382,8 @@ importScripts('lib/i18n.js');
     });
   }
   /** Download a Twitter video from available candidates, trying each in order. */
-  async function downloadTwitterVideo(payload, queueItemId, progressScope = {}) {
+  async function downloadTwitterVideo(payload, queueItemId, progressScope = {}, signal = null) {
+    throwIfAborted(signal);
     const progress = createDownloadProgressReporter(queueItemId, progressScope);
     const media = payload?.media || {};
     const candidates = normalizeVideoCandidates(media);
@@ -1248,16 +1393,20 @@ importScripts('lib/i18n.js');
     const errors = [];
     for (const candidate of candidates) {
       try {
+        throwIfAborted(signal);
         if (candidate.includes(".m3u8")) {
-          return downloadM3u8Video(candidate);
+          return downloadM3u8Video(candidate, signal);
         }
-        const blob = await fetchVideoBlob(candidate, progress);
+        const blob = await fetchVideoBlob(candidate, progress, signal);
         return {
           blob,
           size: blob.size,
           filename: "twitter-video.mp4"
         };
       } catch (error) {
+        if (signal?.aborted || error?.name === "AbortError") {
+          throw createCancelledError();
+        }
         errors.push(error.message || String(error));
       }
     }
@@ -1326,9 +1475,10 @@ importScripts('lib/i18n.js');
     const match = url.match(/\/(\d+)x(\d+)\//);
     return match ? Number(match[1]) * Number(match[2]) : 0;
   }
-  async function fetchVideoBlob(url, onProgress = null) {
+  async function fetchVideoBlob(url, onProgress = null, signal = null) {
     const response = await fetch(url, {
-      credentials: "include"
+      credentials: "include",
+      signal
     });
     if (!response.ok) {
       throw new Error(`${response.status} ${response.statusText}`);
@@ -1357,21 +1507,23 @@ importScripts('lib/i18n.js');
     return new Blob(chunks, { type: response.headers.get("Content-Type") || "video/mp4" });
   }
   /** Download an HLS video stream by concatenating all segments. */
-  async function downloadM3u8Video(url) {
-    const playlist = await fetchText(url);
+  async function downloadM3u8Video(url, signal = null) {
+    throwIfAborted(signal);
+    const playlist = await fetchText(url, signal);
     const audioPlaylistUrl = resolveBestAudioPlaylistUrl(url, playlist);
     const mediaPlaylistUrl = resolveBestPlaylistUrl(url, playlist);
     if (audioPlaylistUrl && mediaPlaylistUrl !== url) {
       throw new Error(__t("bg_hlsSeparateStreams"));
     }
-    const mediaPlaylist = mediaPlaylistUrl === url ? playlist : await fetchText(mediaPlaylistUrl);
+    const mediaPlaylist = mediaPlaylistUrl === url ? playlist : await fetchText(mediaPlaylistUrl, signal);
     const parts = parseMediaPlaylist(mediaPlaylistUrl, mediaPlaylist);
     if (!parts.length) {
       throw new Error(__t("bg_noHlsSegments"));
     }
     const blobs = [];
     for (const partUrl of parts) {
-      blobs.push(await fetchVideoBlob(partUrl));
+      throwIfAborted(signal);
+      blobs.push(await fetchVideoBlob(partUrl, null, signal));
     }
     const isFragmentedMp4 = parts.some((partUrl) => /\.(m4s|cmfv|mp4)(\?|$)/.test(partUrl));
     return {
@@ -1397,9 +1549,10 @@ importScripts('lib/i18n.js');
     audioVariants.sort((a, b) => b.bitrate - a.bitrate);
     return new URL(audioVariants[0].url, baseUrl).toString();
   }
-  async function fetchText(url) {
+  async function fetchText(url, signal = null) {
     const response = await fetch(url, {
-      credentials: "include"
+      credentials: "include",
+      signal
     });
     if (!response.ok) {
       throw new Error(`${response.status} ${response.statusText}`);
@@ -1528,27 +1681,27 @@ importScripts('lib/i18n.js');
     const sliced = value.slice(0, maxLength).trimEnd();
     return sliced.replace(/&[^;\s]*$/, "");
   }
-  async function sendTelegramPhoto(botToken, chatId, photo, caption, queueItemId = "") {
+  async function sendTelegramPhoto(botToken, chatId, photo, caption, queueItemId = "", signal = null) {
     await markTelegramUploadProgress(queueItemId);
     return callTelegram(botToken, "sendPhoto", {
       chat_id: chatId,
       photo,
       caption,
       parse_mode: "HTML"
-    });
+    }, signal);
   }
   /** Send a video via Telegram API (URL reference). */
-  async function sendTelegramVideo(botToken, chatId, video, caption) {
+  async function sendTelegramVideo(botToken, chatId, video, caption, signal = null) {
     return callTelegram(botToken, "sendVideo", {
       chat_id: chatId,
       video,
       caption,
       parse_mode: "HTML",
       supports_streaming: true
-    });
+    }, signal);
   }
   /** Upload and send a video Blob to Telegram. */
-  async function sendTelegramVideoFile(botToken, chatId, videoFile, caption, queueItemId = "") {
+  async function sendTelegramVideoFile(botToken, chatId, videoFile, caption, queueItemId = "", signal = null) {
     const form = new FormData();
     form.set("chat_id", chatId);
     form.set("video", videoFile.blob, videoFile.filename);
@@ -1558,24 +1711,25 @@ importScripts('lib/i18n.js');
       form.set("parse_mode", "HTML");
     }
     await appendQueueDebugLog(queueItemId, `Uploading Telegram video: ${videoFile.filename || "twitter-video.mp4"}`);
-    return callTelegramMultipartLogged(botToken, "sendVideo", form, queueItemId);
+    return callTelegramMultipartLogged(botToken, "sendVideo", form, queueItemId, signal);
   }
   /** Send a text message to Telegram. */
-  async function sendTelegramMessage(botToken, chatId, text, queueItemId = "") {
+  async function sendTelegramMessage(botToken, chatId, text, queueItemId = "", signal = null) {
     await markTelegramUploadProgress(queueItemId);
     return callTelegram(botToken, "sendMessage", {
       chat_id: chatId,
       text,
       parse_mode: "HTML",
       disable_web_page_preview: false
-    });
+    }, signal);
   }
   /** Verify that a Telegram chat exists and the bot is a member. */
-  async function validateTelegramChat(botToken, chatId) {
+  async function validateTelegramChat(botToken, chatId, signal = null) {
     const response = await fetch(`${TELEGRAM_API_BASE}/bot${botToken}/getChat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId })
+      body: JSON.stringify({ chat_id: chatId }),
+      signal
     });
     const data = await response.json().catch(() => null);
     if (!response.ok || !data?.ok) {
@@ -1585,14 +1739,15 @@ importScripts('lib/i18n.js');
     return data.result;
   }
   /** Call a Telegram Bot API method with JSON body. */
-  async function callTelegram(botToken, method, body) {
-    const response = await fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {
+  async function callTelegram(botToken, method, body, signal = null) {
+    const response = await runTelegramSendQueued(body?.chat_id, signal, () => fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify(body)
-    });
+      body: JSON.stringify(body),
+      signal
+    }));
     const data = await response.json().catch(() => null);
     if (!response.ok || !data?.ok) {
       const description = data?.description || `${response.status} ${response.statusText}`;
@@ -1601,21 +1756,37 @@ importScripts('lib/i18n.js');
     return data.result;
   }
   /** Call a Telegram Bot API method with multipart upload, timeout, and debug logging. */
-  async function callTelegramMultipart(botToken, method, body, queueItemId = "") {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), TELEGRAM_UPLOAD_TIMEOUT_MS);
+  async function callTelegramMultipart(botToken, method, body, queueItemId = "", signal = null) {
     const startedAt = Date.now();
     await appendQueueDebugLog(queueItemId, `Calling Telegram ${method}`);
-    const response = await fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {
-      method: "POST",
-      body,
-      signal: controller.signal
+    let controller = null;
+    let timeoutId = null;
+    const abortUpload = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      controller?.abort();
+    };
+    signal?.addEventListener?.("abort", abortUpload, { once: true });
+    const response = await runTelegramSendQueued(body.get("chat_id"), signal, () => {
+      controller = new AbortController();
+      timeoutId = setTimeout(() => controller.abort(), TELEGRAM_UPLOAD_TIMEOUT_MS);
+      return fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {
+        method: "POST",
+        body,
+        signal: controller.signal
+      });
     }).catch((error) => {
       if (error?.name === "AbortError") {
-        throw new Error(__t("bg_uploadTimeout"));
+        throw signal?.aborted ? createCancelledError() : new Error(__t("bg_uploadTimeout"));
       }
       throw error;
-    }).finally(() => clearTimeout(timeoutId));
+    }).finally(() => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      signal?.removeEventListener?.("abort", abortUpload);
+    });
     await appendQueueDebugLog(queueItemId, `Telegram ${method} HTTP ${response.status}, took ${formatDuration(Date.now() - startedAt)}`);
     const data = await response.json().catch(() => null);
     if (!response.ok || !data?.ok) {
@@ -1627,23 +1798,39 @@ importScripts('lib/i18n.js');
     return data.result;
   }
   /** Call a Telegram Bot API multipart method with debug logging wrapper. */
-  async function callTelegramMultipartLogged(botToken, method, body, queueItemId = "") {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), TELEGRAM_UPLOAD_TIMEOUT_MS);
+  async function callTelegramMultipartLogged(botToken, method, body, queueItemId = "", signal = null) {
     const startedAt = Date.now();
     await appendQueueDebugLog(queueItemId, `Calling Telegram ${method}`);
     debugLog(queueItemId, `Telegram ${method} request started`, describeFormData(body));
-    const response = await fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {
-      method: "POST",
-      body,
-      signal: controller.signal
+    let controller = null;
+    let timeoutId = null;
+    const abortUpload = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      controller?.abort();
+    };
+    signal?.addEventListener?.("abort", abortUpload, { once: true });
+    const response = await runTelegramSendQueued(body.get("chat_id"), signal, () => {
+      controller = new AbortController();
+      timeoutId = setTimeout(() => controller.abort(), TELEGRAM_UPLOAD_TIMEOUT_MS);
+      return fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {
+        method: "POST",
+        body,
+        signal: controller.signal
+      });
     }).catch((error) => {
       debugError(queueItemId, `Telegram ${method} request failed before response`, error);
       if (error?.name === "AbortError") {
-        throw new Error(__t("bg_uploadTimeout"));
+        throw signal?.aborted ? createCancelledError() : new Error(__t("bg_uploadTimeout"));
       }
       throw error;
-    }).finally(() => clearTimeout(timeoutId));
+    }).finally(() => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      signal?.removeEventListener?.("abort", abortUpload);
+    });
     await appendQueueDebugLog(queueItemId, `Telegram ${method} HTTP ${response.status}, elapsed ${formatDuration(Date.now() - startedAt)}`);
     debugLog(queueItemId, `Telegram ${method} response received`, {
       status: response.status,
@@ -1685,10 +1872,39 @@ importScripts('lib/i18n.js');
     error.retryAfter = getTelegramRetryAfter(data) || getRetryAfterFromMessage(description);
     return error;
   }
+  async function runTelegramSendQueued(chatId, signal, operation) {
+    const key = String(chatId || "").trim();
+    if (!key) {
+      return operation();
+    }
+
+    const previous = telegramSendQueuesByChat.get(key) || Promise.resolve();
+    const run = previous.catch(() => { }).then(async () => {
+      throwIfAborted(signal);
+      const lastSendAt = Number(telegramLastSendAtByChat.get(key) || 0);
+      const waitMs = Math.max(0, lastSendAt + TELEGRAM_SEND_MIN_INTERVAL_MS - Date.now());
+      if (waitMs > 0) {
+        await sleep(waitMs, signal);
+      }
+      telegramLastSendAtByChat.set(key, Date.now());
+      return operation();
+    });
+    const queued = run.finally(() => {
+      if (telegramSendQueuesByChat.get(key) === queued) {
+        telegramSendQueuesByChat.delete(key);
+      }
+    });
+    telegramSendQueuesByChat.set(key, queued);
+    return queued;
+  }
   function getQueueErrorMessage(error) {
     const message = error?.message || String(error);
     const retryAfter = getErrorRetryAfter(error);
     return retryAfter > 0 ? `${message}; retry manually after ${retryAfter}s` : message;
+  }
+  function getRetryAfterUntil(error) {
+    const retryAfter = getErrorRetryAfter(error);
+    return retryAfter > 0 ? Date.now() + (retryAfter * 1000) : 0;
   }
   function getErrorRetryAfter(error) {
     const direct = Number(error?.retryAfter || 0);
@@ -1705,8 +1921,28 @@ importScripts('lib/i18n.js');
     const match = String(message || "").match(/retry after\s+(\d+)/i);
     return match ? Math.max(1, Number(match[1])) : 0;
   }
-  function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  function sleep(ms, signal = null) {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(createCancelledError());
+        return;
+      }
+      const timeoutId = setTimeout(resolve, ms);
+      signal?.addEventListener?.("abort", () => {
+        clearTimeout(timeoutId);
+        reject(createCancelledError());
+      }, { once: true });
+    });
+  }
+  function throwIfAborted(signal) {
+    if (signal?.aborted) {
+      throw createCancelledError();
+    }
+  }
+  function createCancelledError() {
+    const error = new Error("Task cancelled by user.");
+    error.code = "CANCELLED";
+    return error;
   }
   /** Format bytes as a human-readable string for debug logs. */
   function formatDebugBytes(bytes) {

@@ -2,7 +2,7 @@ import http from "node:http";
 import { APP_NAME, BACKEND_VERSION, EXTENSION_ID, HOST, PORT, PUBLIC_URL } from "./config.js";
 import { AppError, Err } from "./errors.js";
 import { forwardEndpoint } from "./forwarder.js";
-import { createForwardJob, cleanupJobs, jobs, loadJobs, runForwardJob, serializeJob, streamForward, touchJob, updateJob } from "./jobs.js";
+import { cancelForwardJob, createForwardJob, cleanupJobs, enqueueForwardJob, jobs, loadJobs, serializeJob, streamForward, touchJob } from "./jobs.js";
 import { createRequestContext, logForwardRequest, logRequestEnd, logRequestStart } from "./logger.js";
 import { getEndpointUrl, getRequestOrigin, normalizeEndpointUrl, readJsonBody, sendHtml, sendJson, sendOptions } from "./http-utils.js";
 import { renderSetupPage, resolveSetupLocale } from "./setup-page.js";
@@ -48,7 +48,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       logForwardRequest(body, context);
       const job = createForwardJob(body?.payload, body?.telegram, user.uid);
-      runForwardJob(job, forwardEndpoint);
+      enqueueForwardJob(job, forwardEndpoint);
       return sendJson(res, 202, { ok: true, job: serializeJob(job) });
     }
     // DELETE /api/forward-jobs/:id - Cancel a job
@@ -60,9 +60,7 @@ const server = http.createServer(async (req, res) => {
       const job = jobs.get(jobMatch[1]);
       if (!job) return sendJson(res, 404, { ok: false, code: Err.JOB_NOT_FOUND, error: "Job not found" });
       if (job.uid !== user.uid) return sendJson(res, 403, { ok: false, code: Err.FORBIDDEN, error: "Forbidden" });
-      job.abortController?.abort();
-      job.cancelled = true;
-      updateJob(job, { status: "cancelled", error: "Task cancelled by user.", completedAt: Date.now() });
+      cancelForwardJob(job);
       return sendJson(res, 200, { ok: true, job: serializeJob(job) });
     }
     if (jobMatch && req.method === "GET") {

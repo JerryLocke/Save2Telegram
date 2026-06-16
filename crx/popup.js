@@ -253,7 +253,9 @@
 
     const id = button.dataset.id;
     const action = button.dataset.action;
-    const type = action === "retry" ? "RETRY_FORWARD_QUEUE_ITEM" : "REMOVE_FORWARD_QUEUE_ITEM";
+    const type = action === "retry"
+      ? "RETRY_FORWARD_QUEUE_ITEM"
+      : (action === "cancel" ? "CANCEL_FORWARD_QUEUE_ITEM" : "REMOVE_FORWARD_QUEUE_ITEM");
     button.disabled = true;
 
     try {
@@ -1084,6 +1086,7 @@
 
   function updateQueueRemoveButton(button, item) {
     const isSent = item.status === "sent";
+    button.dataset.action = isSent ? "remove" : "cancel";
     button.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>';
     button.title = isSent ? Save2TG.I18n.t("popup_delete") : Save2TG.I18n.t("popup_cancel");
     button.setAttribute("aria-label", isSent ? Save2TG.I18n.t("popup_delete") : Save2TG.I18n.t("popup_cancel"));

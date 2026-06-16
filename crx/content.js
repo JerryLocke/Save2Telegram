@@ -5,6 +5,8 @@
   const WRAPPER_CLASS = "tf-forward-action";
   const MENU_CLASS = "tf-forward-config-menu";
   const TOAST_ID = "tf-forward-toast";
+  const VIDEO_CANDIDATE_WAIT_MS = 3500;
+  const VIDEO_CANDIDATE_POLL_MS = 150;
   const LABEL_READY = function () { return chrome.i18n.getMessage("content_labelReady"); };
   const LABEL_SENDING = function () { return chrome.i18n.getMessage("content_labelSending"); };
   const LABEL_SENT = function () { return chrome.i18n.getMessage("content_labelSent"); };
@@ -26,6 +28,7 @@
   let lastResourceRenderAt = 0;
   let configCache = null;
   let configCacheAt = 0;
+  const videoWarmups = new WeakMap();
 
   init();
 
@@ -182,6 +185,7 @@
       if (existingButton) {
         syncButtonSurface(existingButton, mount);
         bindButtonInteractions(existingWrapper, existingButton);
+        warmForwardVideoSoon(existingButton);
       }
 
       if (!isMountedAtTarget(existingWrapper, mount)) {
@@ -202,6 +206,7 @@
     bindButtonInteractions(wrapper, button);
     wrapper.append(button);
     insertAfter(mount.parent, wrapper, mount.after);
+    warmForwardVideoSoon(button);
   }
 
   /** Wire click handlers and contextual menu to a forward button. */
@@ -212,8 +217,14 @@
 
     wrapper.dataset.tfConfigMenuBound = "true";
     button.addEventListener("click", (event) => handleForwardClick(event, wrapper, button));
-    button.addEventListener("mouseenter", () => showConfigMenu(wrapper, button));
-    button.addEventListener("focus", () => showConfigMenu(wrapper, button));
+    button.addEventListener("mouseenter", () => {
+      showConfigMenu(wrapper, button);
+      warmForwardVideo(button);
+    });
+    button.addEventListener("focus", () => {
+      showConfigMenu(wrapper, button);
+      warmForwardVideo(button);
+    });
     wrapper.addEventListener("mouseleave", () => scheduleHideConfigMenu(wrapper));
     wrapper.addEventListener("focusout", () => {
       window.setTimeout(() => {
@@ -257,7 +268,8 @@
     setButtonState(button, true, LABEL_SENDING());
 
     try {
-      const payload = collectTweetPayload(button);
+      let payload = collectTweetPayload(button);
+      payload = await prepareVideoCandidatesForForward(button, payload);
       const response = await chrome.runtime.sendMessage({
         type: "FORWARD_TWITTER_MEDIA",
         payload,
@@ -276,6 +288,189 @@
       showToast(error.message || String(error), true);
       setButtonState(button, false, LABEL_READY());
     }
+  }
+
+  async function prepareVideoCandidatesForForward(button, payload) {
+    if (!hasVideoWithoutDownloadableCandidate(payload)) {
+      return payload;
+    }
+
+    const mediaRoot = findMediaRootForButton(button);
+    const videos = findVisibleVideos(mediaRoot);
+    if (!videos.length) {
+      return payload;
+    }
+
+    videos.forEach(warmVideoElement);
+    const foundCandidate = await waitForVideoCandidate(mediaRoot, videos, VIDEO_CANDIDATE_WAIT_MS);
+    return foundCandidate ? collectTweetPayload(button) : payload;
+  }
+
+  function warmForwardVideoSoon(button) {
+    if (button?.dataset.tfSurface !== "media") {
+      return;
+    }
+
+    window.setTimeout(() => warmForwardVideo(button), 0);
+  }
+
+  function warmForwardVideo(button) {
+    const mediaRoot = findMediaRootForButton(button);
+    findVisibleVideos(mediaRoot).forEach(warmVideoElement);
+  }
+
+  function warmVideoElement(video) {
+    if (!video) {
+      return Promise.resolve(false);
+    }
+
+    const existingWarmup = videoWarmups.get(video);
+    if (existingWarmup) {
+      return existingWarmup;
+    }
+
+    const warmup = Promise.resolve()
+      .then(() => {
+        if (collectVideoCandidates(video).length) {
+          return true;
+        }
+
+        try {
+          video.preload = "auto";
+        } catch {
+          // Ignore browser-managed media elements that do not allow mutation.
+        }
+
+        try {
+          if (video.networkState === video.NETWORK_EMPTY || (!video.currentSrc && !video.src)) {
+            video.load();
+          }
+        } catch {
+          // X may replace media elements while React is reconciling.
+        }
+
+        return true;
+      })
+      .catch(() => false);
+
+    videoWarmups.set(video, warmup);
+    return warmup;
+  }
+
+  async function waitForVideoCandidate(root, videos, timeoutMs) {
+    if (hasVideoCandidateInRoot(root, videos) || await hasCapturedVideoCandidate()) {
+      return true;
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      let observer = null;
+      let pollTimer = 0;
+      let timeoutTimer = 0;
+      const videoEvents = ["loadedmetadata", "loadeddata", "canplay", "playing", "progress", "durationchange"];
+
+      const cleanup = () => {
+        window.clearTimeout(pollTimer);
+        window.clearTimeout(timeoutTimer);
+        observer?.disconnect?.();
+        videos.forEach((video) => {
+          videoEvents.forEach((eventName) => video.removeEventListener(eventName, check));
+        });
+      };
+
+      const finish = (value) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        cleanup();
+        resolve(value);
+      };
+
+      const check = () => {
+        if (hasVideoCandidateInRoot(root, videos)) {
+          finish(true);
+          return;
+        }
+
+        hasCapturedVideoCandidate()
+          .then((hasCandidate) => {
+            if (hasCandidate) {
+              finish(true);
+            }
+          })
+          .catch(() => {});
+      };
+
+      const poll = () => {
+        check();
+        if (!settled) {
+          pollTimer = window.setTimeout(poll, VIDEO_CANDIDATE_POLL_MS);
+        }
+      };
+
+      videos.forEach((video) => {
+        videoEvents.forEach((eventName) => video.addEventListener(eventName, check, { passive: true }));
+      });
+
+      if ("PerformanceObserver" in window) {
+        try {
+          observer = new PerformanceObserver((list) => {
+            if (list.getEntries().some((entry) => isDownloadableTwitterVideoResource(entry.name))) {
+              finish(true);
+            }
+          });
+          observer.observe({ type: "resource", buffered: true });
+        } catch {
+          observer = null;
+        }
+      }
+
+      timeoutTimer = window.setTimeout(() => finish(false), timeoutMs);
+      pollTimer = window.setTimeout(poll, VIDEO_CANDIDATE_POLL_MS);
+    });
+  }
+
+  function hasVideoCandidateInRoot(root, videos = findVisibleVideos(root)) {
+    return videos.some((video) => collectVideoCandidates(video).length) ||
+      collectVideoCandidates(null).length > 0;
+  }
+
+  async function hasCapturedVideoCandidate() {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "GET_CAPTURED_VIDEO_CANDIDATES" });
+      const candidates = Array.isArray(response?.result) ? response.result : [];
+      return candidates
+        .map((url) => typeof url === "string" ? cleanEscapedUrl(url) : "")
+        .some((url) => url && !url.startsWith("blob:") && isDownloadableTwitterVideoResource(url));
+    } catch {
+      return false;
+    }
+  }
+
+  function hasVideoWithoutDownloadableCandidate(payload) {
+    return getPayloadVideoItems(payload)
+      .some((media) => !hasDownloadableVideoCandidate(media));
+  }
+
+  function getPayloadVideoItems(payload) {
+    const mediaItems = Array.isArray(payload?.mediaItems) && payload.mediaItems.length
+      ? payload.mediaItems
+      : (payload?.media ? [payload.media] : []);
+
+    return mediaItems.filter((media) => media?.type === "video");
+  }
+
+  function hasDownloadableVideoCandidate(media) {
+    const candidates = [
+      media?.url,
+      ...(Array.isArray(media?.candidates) ? media.candidates : [])
+    ];
+
+    return candidates
+      .map((url) => typeof url === "string" ? cleanEscapedUrl(url) : "")
+      .some((url) => url && !url.startsWith("blob:") && isDownloadableTwitterVideoResource(url));
   }
 
   /** Show a dropdown menu of Telegram configurations for the user to pick. */
@@ -681,8 +876,9 @@
   function collectTweetPayload(sourceButton) {
     // Multiple tweet articles can share one status page; the clicked footer decides which tweet to forward.
     const article = findTweetArticleForButton(sourceButton) || findMainTweetArticle();
+    const mediaRoot = findMediaRootForButton(sourceButton, article);
     // Keep the legacy single media field while adding mediaItems for mixed photo/video tweets.
-    const mediaItems = findVisibleMediaItems(article || document);
+    const mediaItems = findVisibleMediaItems(mediaRoot);
     const media = mediaItems[0] || null;
 
     return {
@@ -696,6 +892,40 @@
 
   function findTweetArticleForButton(button) {
     return button?.closest?.("article") || null;
+  }
+
+  function findMediaRootForButton(button, article = null) {
+    return findMediaViewerRootForButton(button) ||
+      article ||
+      findTweetArticleForButton(button) ||
+      findMainTweetArticle() ||
+      document;
+  }
+
+  function findMediaViewerRootForButton(button) {
+    if (!button || button.dataset.tfSurface !== "media") {
+      return null;
+    }
+
+    let node = button.parentElement;
+    while (node && node !== document.body) {
+      if (hasDetachedVisibleMedia(node)) {
+        return node;
+      }
+
+      if (node.getAttribute("role") === "dialog") {
+        break;
+      }
+
+      node = node.parentElement;
+    }
+
+    return null;
+  }
+
+  function hasDetachedVisibleMedia(root) {
+    return Array.from(root.querySelectorAll('img[src*="twimg.com/media"],video'))
+      .some((media) => !media.closest("article") && isVisible(media) && isInsideRootBounds(media, root));
   }
 
   /** Extract the canonical tweet URL from a tweet article element. */
@@ -753,7 +983,7 @@
   function findVisibleMediaItems(root = document) {
     // Mixed tweets render photos and videos as separate DOM media nodes inside the same article.
     const items = [];
-    const videos = findVisibleElements("video", root);
+    const videos = findVisibleVideos(root);
 
     for (const video of videos) {
       const videoCandidates = collectVideoCandidates(video);
@@ -768,6 +998,7 @@
 
     const images = Array.from(root.querySelectorAll('img[src*="twimg.com/media"]'))
       .filter(isVisible)
+      .filter((image) => isInsideRootBounds(image, root))
       .map((image) => ({
         type: "photo",
         url: stripImageSizeParams(image.src),
@@ -837,6 +1068,11 @@
     return Array.from(root.querySelectorAll(selector)).filter(isVisible);
   }
 
+  function findVisibleVideos(root = document) {
+    return findVisibleElements("video", root)
+      .filter((video) => isInsideRootBounds(video, root));
+  }
+
   /** Extract downloadable video source URLs from a <video> element. */
   function collectVideoCandidates(video) {
     const candidates = [];
@@ -861,7 +1097,7 @@
     findTwitterVideoUrlsInPage().forEach((url) => candidates.push(url));
 
     return [...new Set(candidates.map(cleanEscapedUrl))]
-      .filter((url) => url && !url.startsWith("blob:"))
+      .filter((url) => url && !url.startsWith("blob:") && isDownloadableTwitterVideoResource(url))
       .sort(rankVideoCandidate);
   }
 
@@ -870,6 +1106,10 @@
       url.includes(".mp4") ||
       url.includes(".m3u8")
     );
+  }
+
+  function isDownloadableTwitterVideoResource(url) {
+    return isTwitterVideoResource(url) && !/\/(?:vid|aud)\/[^/]+\/0\/0\//.test(url);
   }
 
   /** Scan the page for twitter video URLs captured via webRequest. */
@@ -910,6 +1150,23 @@
     const rect = element.getBoundingClientRect();
     const style = window.getComputedStyle(element);
     return rect.width > 8 && rect.height > 8 && style.visibility !== "hidden" && style.display !== "none";
+  }
+
+  function isInsideRootBounds(element, root = document) {
+    if (!root || root === document || root === document.body || root === document.documentElement) {
+      return true;
+    }
+
+    const rect = element.getBoundingClientRect();
+    const rootRect = root.getBoundingClientRect();
+    if (!rootRect.width || !rootRect.height) {
+      return true;
+    }
+
+    return rect.right > rootRect.left &&
+      rect.left < rootRect.right &&
+      rect.bottom > rootRect.top &&
+      rect.top < rootRect.bottom;
   }
 
   // ==================== UI Helpers ====================
