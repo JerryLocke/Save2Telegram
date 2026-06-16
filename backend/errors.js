@@ -1,9 +1,10 @@
 /** Application-level error with a machine-readable error code. */
 export class AppError extends Error {
-  constructor(code, message) {
+  constructor(code, message, details = {}) {
     super(message);
     this.code = code;
     this.name = "AppError";
+    Object.assign(this, details);
   }
 }
 

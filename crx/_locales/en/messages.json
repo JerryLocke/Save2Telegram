@@ -167,6 +167,27 @@
   "popup_clearEndpointFailed": {
     "message": "Failed to clear endpoint."
   },
+  "popup_settingsBackup": {
+    "message": "Settings backup"
+  },
+  "popup_exportSettings": {
+    "message": "Export"
+  },
+  "popup_importSettings": {
+    "message": "Import"
+  },
+  "popup_exportSettingsDone": {
+    "message": "Settings exported."
+  },
+  "popup_importSettingsDone": {
+    "message": "Settings imported."
+  },
+  "popup_exportSettingsFailed": {
+    "message": "Failed to export settings."
+  },
+  "popup_importSettingsFailed": {
+    "message": "Failed to import settings."
+  },
   "popup_notePlaceholder": {
     "message": "e.g. Main channel / Test group"
   },
@@ -266,6 +287,9 @@
   },
   "bg_bindingRejected": {
     "message": "User cancelled the endpoint binding."
+  },
+  "bg_invalidSettingsBackup": {
+    "message": "Invalid settings backup file."
   },
   "bg_configureFirst": {
     "message": "Please configure a Telegram Bot Token and Channel ID in the extension popup first."

@@ -132,6 +132,7 @@ export function updateJob(job, patch) {
   // Extract errorCode from AppError instances
   if (patch.error && typeof patch.error === "object" && patch.error instanceof AppError) {
     patch.errorCode = patch.error.code;
+    patch.retryAfter = Number(patch.error.retryAfter || 0);
     patch.error = patch.error.message;
   }
 
@@ -166,6 +167,7 @@ export function serializeJob(job) {
     result: job.result,
     error: job.error,
     errorCode: job.errorCode || "",
+    retryAfter: Number(job.retryAfter || 0),
     cancelled: Boolean(job.cancelled),
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,

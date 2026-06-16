@@ -571,6 +571,16 @@ button:disabled {
   display: none;
 }
 
+.settings-backup-row {
+  align-items: center;
+}
+
+.settings-backup-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
 .settings-label {
   min-width: 0;
   color: #333333;

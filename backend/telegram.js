@@ -59,7 +59,7 @@ async function callTelegram(botToken, method, body, signal) {
   });
   const data = await response.json().catch(() => null);
   if (!response.ok || !data?.ok) {
-    throw new AppError(Err.TELEGRAM_API_ERROR, `Telegram API call failed: ${data?.description || `${response.status} ${response.statusText}`}`);
+    throw createTelegramApiError(response, data);
   }
   return data.result;
 }
@@ -100,13 +100,14 @@ export async function callTelegramMultipart(botToken, method, body, options = {}
 
       const data = await response.json().catch(() => null);
       if (!response.ok || !data?.ok) {
+        const retryAfter = getTelegramRetryAfter(data);
         if (shouldRetryTelegramResponse(response, attempt)) {
-          lastError = new AppError(Err.TELEGRAM_API_ERROR, `Telegram API call failed: ${data?.description || `${response.status} ${response.statusText}`}`);
-          await waitForRetry(attempt, cancelSignal);
+          lastError = createTelegramApiError(response, data);
+          await waitForRetry(attempt, cancelSignal, retryAfter);
           continue;
         }
 
-        throw new AppError(Err.TELEGRAM_API_ERROR, `Telegram API call failed: ${data?.description || `${response.status} ${response.statusText}`}`);
+        throw createTelegramApiError(response, data);
       }
       return data.result;
     } catch (error) {
@@ -150,13 +151,13 @@ function throwIfAborted(signal) {
   }
 }
 
-/** Return true for Telegram responses that are normally safe to retry. */
+/** Return true for transient Telegram responses that are safe to retry automatically. */
 function shouldRetryTelegramResponse(response, attempt) {
   if (attempt >= TELEGRAM_UPLOAD_RETRIES) {
     return false;
   }
 
-  return response?.status === 429 || (response?.status >= 500 && response?.status <= 599);
+  return response?.status >= 500 && response?.status <= 599;
 }
 
 /** Return true for transient network failures seen during streaming uploads. */
@@ -171,8 +172,10 @@ function isRetryableUploadError(error) {
 }
 
 /** Wait before retrying an upload, while still honoring cancellation. */
-function waitForRetry(attempt, signal) {
-  const delay = TELEGRAM_RETRY_BASE_DELAY_MS * (2 ** attempt);
+function waitForRetry(attempt, signal, retryAfter = 0) {
+  const delay = retryAfter > 0
+    ? (retryAfter * 1000) + 1000
+    : TELEGRAM_RETRY_BASE_DELAY_MS * (2 ** attempt);
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(new AppError(Err.CANCELLED, "Task cancelled by user."));
@@ -185,6 +188,22 @@ function waitForRetry(attempt, signal) {
       reject(new AppError(Err.CANCELLED, "Task cancelled by user."));
     }, { once: true });
   });
+}
+
+/** Build a Telegram API error while preserving flood-control retry metadata. */
+function createTelegramApiError(response, data) {
+  const description = data?.description || `${response.status} ${response.statusText}`;
+  const retryAfter = getTelegramRetryAfter(data);
+  return new AppError(Err.TELEGRAM_API_ERROR, `Telegram API call failed: ${description}`, {
+    retryAfter,
+    telegramStatus: response.status
+  });
+}
+
+/** Extract Telegram flood-control retry_after seconds from API response JSON. */
+function getTelegramRetryAfter(data) {
+  const value = Number(data?.parameters?.retry_after || 0);
+  return Number.isFinite(value) && value > 0 ? Math.ceil(value) : 0;
 }
 
 /** Format nested undici/network errors without leaking the whole stack to clients. */

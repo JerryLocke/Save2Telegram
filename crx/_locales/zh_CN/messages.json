@@ -167,6 +167,27 @@
   "popup_clearEndpointFailed": {
     "message": "取消端点失败。"
   },
+  "popup_settingsBackup": {
+    "message": "设置备份"
+  },
+  "popup_exportSettings": {
+    "message": "导出"
+  },
+  "popup_importSettings": {
+    "message": "导入"
+  },
+  "popup_exportSettingsDone": {
+    "message": "设置已导出。"
+  },
+  "popup_importSettingsDone": {
+    "message": "设置已导入。"
+  },
+  "popup_exportSettingsFailed": {
+    "message": "导出设置失败。"
+  },
+  "popup_importSettingsFailed": {
+    "message": "导入设置失败。"
+  },
   "popup_notePlaceholder": {
     "message": "例如：主频道 / 测试群"
   },
@@ -265,6 +286,9 @@
   },
   "bg_bindingRejected": {
     "message": "用户取消了端点绑定。"
+  },
+  "bg_invalidSettingsBackup": {
+    "message": "无效的设置备份文件。"
   },
   "bg_configureFirst": {
     "message": "请先在扩展 popup 中配置 Telegram Bot Token 和 Channel ID。"

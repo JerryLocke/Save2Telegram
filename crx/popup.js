@@ -24,6 +24,9 @@
   const forwardEndpointRow = document.getElementById("forward-endpoint-row");
   const forwardEndpointHost = document.getElementById("forward-endpoint-host");
   const clearForwardEndpointButton = document.getElementById("clear-forward-endpoint");
+  const exportSettingsButton = document.getElementById("export-settings");
+  const importSettingsButton = document.getElementById("import-settings");
+  const importSettingsFileInput = document.getElementById("import-settings-file");
 
   const QUEUE_KEY = "forwardQueue";
   const GENERAL_SETTINGS_KEY = "generalSettings";
@@ -85,6 +88,59 @@
       setSettingsStatus(error.message || String(error), true);
     } finally {
       clearForwardEndpointButton.disabled = false;
+    }
+  });
+
+  exportSettingsButton.addEventListener("click", async () => {
+    exportSettingsButton.disabled = true;
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "EXPORT_SETTINGS" });
+      if (!response?.ok) {
+        throw new Error(response?.error || Save2TG.I18n.t("popup_exportSettingsFailed"));
+      }
+
+      downloadSettingsBackup(response.result);
+      setSettingsStatus(Save2TG.I18n.t("popup_exportSettingsDone"));
+    } catch (error) {
+      setSettingsStatus(error.message || String(error), true);
+    } finally {
+      exportSettingsButton.disabled = false;
+    }
+  });
+
+  importSettingsButton.addEventListener("click", () => {
+    importSettingsFileInput.value = "";
+    importSettingsFileInput.click();
+  });
+
+  importSettingsFileInput.addEventListener("change", async () => {
+    const file = importSettingsFileInput.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    importSettingsButton.disabled = true;
+    try {
+      const backup = JSON.parse(await readTextFile(file));
+      const response = await chrome.runtime.sendMessage({ type: "IMPORT_SETTINGS", backup });
+      if (!response?.ok) {
+        throw new Error(response?.error || Save2TG.I18n.t("popup_importSettingsFailed"));
+      }
+
+      configs = response.result?.configs || [];
+      applyGeneralSettings(response.result?.settings);
+      await applyImportedLanguage(response.result?.uiLanguage);
+      renderConfigs();
+      editConfig(configs[0] || null);
+      currentQueue = await getVisibleQueueFromStorage(response.result?.settings);
+      lastQueueSignature = "";
+      renderQueue();
+      setSettingsStatus(Save2TG.I18n.t("popup_importSettingsDone"));
+    } catch (error) {
+      setSettingsStatus(error.message || String(error), true);
+    } finally {
+      importSettingsButton.disabled = false;
+      importSettingsFileInput.value = "";
     }
   });
 
@@ -397,6 +453,40 @@
       forwardEndpointHost.removeAttribute("href");
       forwardEndpointHost.removeAttribute("title");
     }
+  }
+
+  function downloadSettingsBackup(backup) {
+    const json = JSON.stringify(backup, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const date = new Date().toISOString().slice(0, 10);
+    link.href = url;
+    link.download = `save2telegram-settings-${date}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function readTextFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error || new Error(Save2TG.I18n.t("popup_importSettingsFailed")));
+      reader.readAsText(file);
+    });
+  }
+
+  async function applyImportedLanguage(language) {
+    const normalized = ["auto", "en", "zh_CN"].includes(language) ? language : "auto";
+    if (languageSelect) {
+      languageSelect.value = normalized;
+    }
+    Save2TG.I18n.reset();
+    await Save2TG.I18n.init();
+    Save2TG.I18n.applyDom();
+    refreshLocalizedDynamicContent();
   }
 
   /** Normalize an endpoint URL: ensure protocol, strip trailing slash. */

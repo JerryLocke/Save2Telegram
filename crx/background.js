@@ -7,6 +7,7 @@ importScripts('lib/i18n.js');
   const QUEUE_KEY = "forwardQueue";
   const TELEGRAM_CONFIGS_KEY = "telegramConfigs";
   const GENERAL_SETTINGS_KEY = "generalSettings";
+  const UI_LANGUAGE_KEY = "uiLanguage";
   const DEFAULT_GENERAL_SETTINGS = {
     keepCompletedItems: false,
     maxCompletedItems: 5,
@@ -23,6 +24,7 @@ importScripts('lib/i18n.js');
   let queueProcessingPromise = null;
   let queueUpdatePromise = Promise.resolve();
   const activeQueueItemIds = new Set();
+  const activeQueueChatKeys = new Set();
   const capturedVideoUrlsByTab = new Map();
   const pendingForwardEndpointBindings = new Map();
   // ==================== Architecture ====================
@@ -98,6 +100,18 @@ importScripts('lib/i18n.js');
           result: settings,
           queue: await getVisibleQueue()
         }))
+        .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+      return true;
+    }
+    if (message?.type === "EXPORT_SETTINGS") {
+      exportSettings()
+        .then((backup) => sendResponse({ ok: true, result: backup }))
+        .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+      return true;
+    }
+    if (message?.type === "IMPORT_SETTINGS") {
+      importSettings(message.backup)
+        .then((result) => sendResponse({ ok: true, result }))
         .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
       return true;
     }
@@ -184,6 +198,7 @@ importScripts('lib/i18n.js');
       payload: normalizedPayload,
       telegramConfigId: config.id,
       telegramConfigLabel: getTelegramConfigLabel(config),
+      telegramChatKey: getTelegramChatKey(config),
       attempts: 0,
       progress: 0,
       phaseProgress: 0,
@@ -406,6 +421,69 @@ importScripts('lib/i18n.js');
     await chrome.storage.sync.set({ [GENERAL_SETTINGS_KEY]: nextSettings });
     return nextSettings;
   }
+  async function exportSettings() {
+    const [settings, telegramConfigs, localSettings] = await Promise.all([
+      getGeneralSettings(),
+      getTelegramConfigs(),
+      chrome.storage.local.get(UI_LANGUAGE_KEY)
+    ]);
+    return {
+      schema: "save2telegram-settings",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      uiLanguage: normalizeUiLanguage(localSettings[UI_LANGUAGE_KEY]),
+      generalSettings: settings,
+      telegramConfigs
+    };
+  }
+  async function importSettings(backup) {
+    if (!backup || typeof backup !== "object") {
+      throw new Error(__t("bg_invalidSettingsBackup"));
+    }
+    const hasRecognizedSettings = Object.prototype.hasOwnProperty.call(backup, "generalSettings") ||
+      Object.prototype.hasOwnProperty.call(backup, "settings") ||
+      Object.prototype.hasOwnProperty.call(backup, "telegramConfigs") ||
+      Object.prototype.hasOwnProperty.call(backup, "configs") ||
+      Object.prototype.hasOwnProperty.call(backup, "uiLanguage");
+    if (!hasRecognizedSettings) {
+      throw new Error(__t("bg_invalidSettingsBackup"));
+    }
+    const hasConfigs = Object.prototype.hasOwnProperty.call(backup, "telegramConfigs") ||
+      Object.prototype.hasOwnProperty.call(backup, "configs");
+    const rawConfigs = hasConfigs
+      ? Array.isArray(backup.telegramConfigs)
+        ? backup.telegramConfigs
+        : Array.isArray(backup.configs)
+          ? backup.configs
+          : []
+      : await getTelegramConfigs();
+    const nextConfigs = normalizeTelegramConfigs(rawConfigs);
+    const rawSettings = backup.generalSettings || backup.settings || await getGeneralSettings();
+    const nextSettings = normalizeGeneralSettings(rawSettings);
+    const localSettings = Object.prototype.hasOwnProperty.call(backup, "uiLanguage")
+      ? { [UI_LANGUAGE_KEY]: backup.uiLanguage }
+      : await chrome.storage.local.get(UI_LANGUAGE_KEY);
+    const uiLanguage = normalizeUiLanguage(localSettings[UI_LANGUAGE_KEY]);
+    await Promise.all([
+      chrome.storage.sync.set({ [GENERAL_SETTINGS_KEY]: nextSettings }),
+      chrome.storage.local.set({ [UI_LANGUAGE_KEY]: uiLanguage }),
+      writeTelegramConfigs(nextConfigs)
+    ]);
+    if (!nextSettings.keepCompletedItems) {
+      await clearCompletedQueueItems();
+    } else {
+      await trimCompletedQueueItems(nextSettings.maxCompletedItems);
+    }
+    return {
+      settings: nextSettings,
+      uiLanguage,
+      configs: nextConfigs.map(sanitizeTelegramConfig)
+    };
+  }
+  function normalizeUiLanguage(value) {
+    const language = String(value || "auto").trim();
+    return ["auto", "en", "zh_CN"].includes(language) ? language : "auto";
+  }
   /** Normalize an endpoint URL: ensure protocol, strip trailing slash. */
   function normalizeEndpointUrl(value) {
     const raw = String(value || "").trim();
@@ -507,6 +585,14 @@ importScripts('lib/i18n.js');
   function getTelegramConfigLabel(config) {
     return config.note || config.chatId || __t("bg_unnamedConfig");
   }
+  function getTelegramChatKey(config) {
+    const chatId = String(config?.chatId || "").trim();
+    return chatId ? `chat:${chatId}` : "";
+  }
+  function getQueueItemChatKey(item) {
+    return String(item?.telegramChatKey || "").trim() ||
+      (item?.telegramConfigId ? `config:${item.telegramConfigId}` : "");
+  }
   function createTelegramConfigId() {
     return `tg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
@@ -568,6 +654,7 @@ importScripts('lib/i18n.js');
         progress: 0,
         phaseProgress: 0,
         lastError: "",
+        remoteJobId: "",
         updatedAt: Date.now()
       };
     }));
@@ -636,18 +723,34 @@ importScripts('lib/i18n.js');
 
     while (activeQueueItemIds.size < MAX_CONCURRENT_FORWARD_TASKS) {
       const queue = await getQueue();
-      const item = queue.find((entry) => entry.status === "pending" && !activeQueueItemIds.has(entry.id));
+      const item = findNextRunnableQueueItem(queue);
       if (!item) {
         break;
       }
       activeQueueItemIds.add(item.id);
+      const chatKey = getQueueItemChatKey(item);
+      if (chatKey) {
+        activeQueueChatKeys.add(chatKey);
+      }
       runQueueItem(item)
         .catch((error) => debugError(item.id, "Queue item runner failed", error))
         .finally(() => {
           activeQueueItemIds.delete(item.id);
+          if (chatKey) {
+            activeQueueChatKeys.delete(chatKey);
+          }
           processQueue();
         });
     }
+  }
+  function findNextRunnableQueueItem(queue) {
+    return queue.find((entry) => {
+      if (entry.status !== "pending" || activeQueueItemIds.has(entry.id)) {
+        return false;
+      }
+      const chatKey = getQueueItemChatKey(entry);
+      return !chatKey || !activeQueueChatKeys.has(chatKey);
+    });
   }
   /** Process one queue item. Multiple instances may run in parallel. */
   async function runQueueItem(item) {
@@ -691,10 +794,11 @@ importScripts('lib/i18n.js');
       }
     } catch (error) {
       debugError(claimedItem.id, "Queue item failed", error);
-      await appendQueueDebugLog(claimedItem.id, `Failed: ${error.message || String(error)}`);
+      const lastError = getQueueErrorMessage(error);
+      await appendQueueDebugLog(claimedItem.id, `Failed: ${lastError}`);
       await markQueueItem(claimedItem.id, {
         status: "error",
-        lastError: error.message || String(error),
+        lastError,
         updatedAt: Date.now()
       });
     }
@@ -891,7 +995,7 @@ importScripts('lib/i18n.js');
       if (!data?.ok || !data?.job) return null;
       const job = data.job;
       if (job.status === "sent") return job.result;
-      if (job.status === "error") { const err = new Error(job.error || "Backend forward failed"); err.code = job.errorCode || "TELEGRAM_API_ERROR"; throw err; }
+      if (job.status === "error") { const err = new Error(job.error || "Backend forward failed"); err.code = job.errorCode || "TELEGRAM_API_ERROR"; err.retryAfter = Number(job.retryAfter || 0); throw err; }
       await this._pollJob(endpointUrl, jobId, queueItemId);
       return undefined;
     }
@@ -934,6 +1038,7 @@ importScripts('lib/i18n.js');
           } else if (event === "error") {
             const err = new Error(data?.error || "Backend forward failed");
             err.code = data?.code || "TELEGRAM_API_ERROR";
+            err.retryAfter = Number(data?.retryAfter || data?.job?.retryAfter || 0);
             throw err;
           }
         }
@@ -981,7 +1086,7 @@ importScripts('lib/i18n.js');
           updatedAt: Date.now()
         });
         if (job.status === "sent") return job.result;
-        if (job.status === "error") { const err = new Error(job.error || "Backend forward failed"); err.code = job.errorCode || "TELEGRAM_API_ERROR"; throw err; }
+        if (job.status === "error") { const err = new Error(job.error || "Backend forward failed"); err.code = job.errorCode || "TELEGRAM_API_ERROR"; err.retryAfter = Number(job.retryAfter || 0); throw err; }
       }
       throw new Error(`Job ${jobId} timed out (30 min). You can query it by this ID on the backend`);
     }
@@ -1491,7 +1596,7 @@ importScripts('lib/i18n.js');
     const data = await response.json().catch(() => null);
     if (!response.ok || !data?.ok) {
       const description = data?.description || `${response.status} ${response.statusText}`;
-      throw new Error(__t("bg_telegramApiFailed", [description]));
+      throw createTelegramApiError(description, data);
     }
     return data.result;
   }
@@ -1516,7 +1621,7 @@ importScripts('lib/i18n.js');
     if (!response.ok || !data?.ok) {
       const description = data?.description || `${response.status} ${response.statusText}`;
       await appendQueueDebugLog(queueItemId, `Telegram ${method} error: ${description}`);
-      throw new Error(__t("bg_telegramApiFailed", [description]));
+      throw createTelegramApiError(description, data);
     }
     await appendQueueDebugLog(queueItemId, `Telegram ${method} succeeded`);
     return data.result;
@@ -1549,7 +1654,7 @@ importScripts('lib/i18n.js');
       const description = data?.description || `${response.status} ${response.statusText}`;
       await appendQueueDebugLog(queueItemId, `Telegram ${method} error: ${description}`);
       debugError(queueItemId, `Telegram ${method} API error`, description);
-      throw new Error(__t("bg_telegramApiFailed", [description]));
+      throw createTelegramApiError(description, data);
     }
     await appendQueueDebugLog(queueItemId, `Telegram ${method} success`);
     debugLog(queueItemId, `Telegram ${method} success`);
@@ -1573,6 +1678,32 @@ importScripts('lib/i18n.js');
       });
     }
     return entries;
+  }
+  function createTelegramApiError(description, data) {
+    const error = new Error(__t("bg_telegramApiFailed", [description]));
+    error.code = "TELEGRAM_API_ERROR";
+    error.retryAfter = getTelegramRetryAfter(data) || getRetryAfterFromMessage(description);
+    return error;
+  }
+  function getQueueErrorMessage(error) {
+    const message = error?.message || String(error);
+    const retryAfter = getErrorRetryAfter(error);
+    return retryAfter > 0 ? `${message}; retry manually after ${retryAfter}s` : message;
+  }
+  function getErrorRetryAfter(error) {
+    const direct = Number(error?.retryAfter || 0);
+    if (Number.isFinite(direct) && direct > 0) {
+      return Math.ceil(direct);
+    }
+    return getRetryAfterFromMessage(error?.message || String(error || ""));
+  }
+  function getTelegramRetryAfter(data) {
+    const value = Number(data?.parameters?.retry_after || 0);
+    return Number.isFinite(value) && value > 0 ? Math.ceil(value) : 0;
+  }
+  function getRetryAfterFromMessage(message) {
+    const match = String(message || "").match(/retry after\s+(\d+)/i);
+    return match ? Math.max(1, Number(match[1])) : 0;
   }
   function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
