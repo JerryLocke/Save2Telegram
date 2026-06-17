@@ -1,0 +1,44 @@
+FROM node:20-alpine AS telegram-bot-api-builder
+
+ARG TELEGRAM_BOT_API_REPOSITORY=https://github.com/tdlib/telegram-bot-api.git
+ARG TELEGRAM_BOT_API_REF=master
+ARG TELEGRAM_BOT_API_BUILD_JOBS=2
+
+RUN apk add --no-cache \
+  build-base \
+  cmake \
+  git \
+  gperf \
+  linux-headers \
+  openssl-dev \
+  zlib-dev
+
+WORKDIR /tmp
+RUN git clone --recursive "$TELEGRAM_BOT_API_REPOSITORY" telegram-bot-api \
+  && cd telegram-bot-api \
+  && git checkout "$TELEGRAM_BOT_API_REF" \
+  && git submodule update --init --recursive \
+  && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
+  && cmake --build build --target install --parallel "$TELEGRAM_BOT_API_BUILD_JOBS"
+
+FROM node:20-alpine
+
+WORKDIR /app
+ENV NODE_ENV=production \
+  TELEGRAM_BOT_API_DIR=/var/lib/telegram-bot-api \
+  TELEGRAM_BOT_API_HOST=127.0.0.1 \
+  TELEGRAM_BOT_API_PORT=8081
+
+RUN apk add --no-cache ca-certificates libstdc++ openssl zlib
+
+COPY --from=telegram-bot-api-builder /usr/local/bin/telegram-bot-api /usr/local/bin/telegram-bot-api
+
+COPY package.json ./
+COPY *.js ./
+COPY docker-entrypoint.sh /usr/local/bin/save2telegram-entrypoint
+
+RUN sed -i 's/\r$//' /usr/local/bin/save2telegram-entrypoint \
+  && chmod +x /usr/local/bin/save2telegram-entrypoint
+
+EXPOSE 3000
+ENTRYPOINT ["save2telegram-entrypoint"]

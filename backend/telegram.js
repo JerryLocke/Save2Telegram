@@ -1,6 +1,6 @@
 import { AppError, Err } from "./errors.js";
+import { TELEGRAM_API_BASE } from "./config.js";
 
-const TELEGRAM_API_BASE = "https://api.telegram.org";
 const TELEGRAM_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const TELEGRAM_UPLOAD_RETRIES = Math.max(0, Number(process.env.TELEGRAM_UPLOAD_RETRIES || 2));
 const TELEGRAM_RETRY_BASE_DELAY_MS = 1200;
@@ -165,7 +165,14 @@ function throwIfAborted(signal) {
   }
 }
 
-/** Serialize Telegram send calls per chat and keep a small gap between sends. */
+/**
+ * Serialize Telegram send calls per chat and keep a small gap between sends.
+ *
+ * Important: if Telegram has already returned flood-control retry_after for a
+ * chat, the backend fails fast instead of sleeping until the cooldown expires.
+ * Long server-side sleeps make jobs hard to test, cancel, and reason about.
+ * The extension should surface retry_after to the user and let the user retry.
+ */
 async function runTelegramSendQueued(chatId, signal, operation) {
   const key = String(chatId || "").trim();
   if (!key) {

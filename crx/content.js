@@ -875,8 +875,8 @@
   /** Collect tweet metadata (author, text, URL, media) from the DOM for forwarding. */
   function collectTweetPayload(sourceButton) {
     // Multiple tweet articles can share one status page; the clicked footer decides which tweet to forward.
-    const article = findTweetArticleForButton(sourceButton) || findMainTweetArticle();
-    const mediaRoot = findMediaRootForButton(sourceButton, article);
+    const article = findPayloadTweetArticleForButton(sourceButton);
+    const mediaRoot = findPayloadMediaRootForButton(sourceButton, article);
     // Keep the legacy single media field while adding mediaItems for mixed photo/video tweets.
     const mediaItems = findVisibleMediaItems(mediaRoot);
     const media = mediaItems[0] || null;
@@ -892,6 +892,29 @@
 
   function findTweetArticleForButton(button) {
     return button?.closest?.("article") || null;
+  }
+
+  function findPayloadTweetArticleForButton(button) {
+    const buttonArticle = findTweetArticleForButton(button);
+    if (buttonArticle) {
+      return buttonArticle;
+    }
+
+    if (button?.dataset?.tfSurface === "media" && isPhotoMediaPage()) {
+      return findPhotoMediaTweetArticle() || findMainTweetArticle();
+    }
+
+    return findMainTweetArticle();
+  }
+
+  function findPayloadMediaRootForButton(button, article = null) {
+    if (button?.dataset?.tfSurface === "media" && isPhotoMediaPage()) {
+      return article ||
+        findMediaViewerRootForButton(button) ||
+        document;
+    }
+
+    return findMediaRootForButton(button, article);
   }
 
   function findMediaRootForButton(button, article = null) {
@@ -921,6 +944,37 @@
     }
 
     return null;
+  }
+
+  function isPhotoMediaPage() {
+    return /\/status\/\d+\/photo\/\d+/.test(location.pathname);
+  }
+
+  function findPhotoMediaTweetArticle() {
+    const tweetUrl = normalizeTweetUrl(location.href);
+    const articles = findTweetArticles();
+    return articles.find((article) => articleMatchesTweetUrl(article, tweetUrl) && hasVisibleTweetMedia(article)) ||
+      articles.find(hasVisibleTweetMedia) ||
+      null;
+  }
+
+  function articleMatchesTweetUrl(article, tweetUrl) {
+    if (!tweetUrl) {
+      return true;
+    }
+
+    return Array.from(article?.querySelectorAll('a[href*="/status/"]') || [])
+      .some((anchor) => normalizeTweetUrl(anchor.href) === tweetUrl);
+  }
+
+  function hasVisibleTweetMedia(root) {
+    const media = Array.from(root?.querySelectorAll('img[src*="twimg.com/media"],video') || []);
+    if (media.some((element) => isVisible(element) && isInsideRootBounds(element, root))) {
+      return true;
+    }
+
+    return Array.from(root?.querySelectorAll('a[href*="/status/"][href*="/photo/"],a[href*="/status/"][href*="/video/"]') || [])
+      .some(isVisible);
   }
 
   function hasDetachedVisibleMedia(root) {

@@ -674,12 +674,14 @@ importScripts('lib/i18n.js');
     const currentItem = queue.find((item) => item.id === id);
     const retryAfterUntil = Number(currentItem?.retryAfterUntil || 0);
     if (retryAfterUntil > Date.now()) {
+      // Fail fast for manual retry during Telegram flood-control cooldown:
+      // keep the popup list intact and surface the wait time only via tooltip.
       const message = getFloodControlRetryMessage(retryAfterUntil);
       await markQueueItem(id, {
         lastError: message,
         updatedAt: Date.now()
       });
-      throw new Error(message);
+      return getVisibleQueue();
     }
     await updateQueue((queue) => queue.map((item) => {
       if (item.id !== id) {
@@ -1872,6 +1874,13 @@ importScripts('lib/i18n.js');
     error.retryAfter = getTelegramRetryAfter(data) || getRetryAfterFromMessage(description);
     return error;
   }
+  /**
+   * Serialize Telegram send calls per chat and keep a short gap between sends.
+   *
+   * Do not sleep through Telegram flood-control retry_after here and do not
+   * auto-retry 429s from the service worker. Long SW sleeps are brittle, and
+   * retry_after should remain a visible queue-item error for manual retry.
+   */
   async function runTelegramSendQueued(chatId, signal, operation) {
     const key = String(chatId || "").trim();
     if (!key) {

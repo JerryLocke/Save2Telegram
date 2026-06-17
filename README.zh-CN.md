@@ -58,6 +58,7 @@ Docker 参数说明：
 - `--secret helloworld`：可选的设置页密钥。设置后，设置页地址是 `/?secret=helloworld`；不设置时，设置页地址是 `/`。
 - `--host 0.0.0.0`：后端监听地址。默认值是 `0.0.0.0`。
 - `--port 3000`：容器内的后端监听端口。默认值是 `3000`。
+- `--telegram-api-base http://127.0.0.1:8081`：后端使用的 Telegram Bot API 地址。默认值是 `https://api.telegram.org`。也可以用环境变量 `TELEGRAM_API_BASE` 设置。
 
 后端启动后会在日志里输出设置地址：
 
@@ -67,6 +68,39 @@ Save2Telegram setup URL: http://localhost:18080/
 
 打开这个地址，点击设置页里的按钮，把后端绑定到扩展。
 如果还没有安装扩展，请先从 [Chrome Web Store](https://chromewebstore.google.com/detail/hibaajhphchibdfkciepacbnifbeiikc) 安装。
+
+## 大视频上传
+
+大视频请使用 `save2telegram-backend-botserver` 镜像。它内置官方开源的 Telegram Bot API Server，并在镜像构建阶段从 `tdlib/telegram-bot-api` 编译。普通 `save2telegram-backend` 镜像不包含内置服务，除非配置 `TELEGRAM_API_BASE`，否则仍然使用 `https://api.telegram.org`。
+
+要上传大视频，请在运行容器时提供 Telegram application 的 `api_id` 和 `api_hash`。botserver 镜像会用 `--local` 模式在 `127.0.0.1:8081` 启动内置 Bot API Server，并自动让 Save2Telegram 后端请求它：
+
+```bash
+docker run -d --name save2telegram-backend -p 18080:3000 \
+  -v save2telegram-data:/app/data \
+  -v save2telegram-bot-api:/var/lib/telegram-bot-api \
+  -e TELEGRAM_API_ID=123456 \
+  -e TELEGRAM_API_HASH=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+  ghcr.io/jerrylocke/save2telegram-backend-botserver:latest \
+  --public-url http://localhost:18080
+```
+
+`TELEGRAM_API_ID` 和 `TELEGRAM_API_HASH` 需要到 [my.telegram.org](https://my.telegram.org) 的 API development tools 里获取。它们不是 bot token，不能提交到代码仓库。
+
+内置 Bot API Server 可选环境变量：
+
+- `TELEGRAM_BOT_API_DIR=/var/lib/telegram-bot-api`：内置 Bot API Server 的工作目录。建议挂载为 volume，保留本地数据。
+- `TELEGRAM_BOT_API_HOST=127.0.0.1`：容器内监听地址。除非需要暴露它，否则保持默认值。
+- `TELEGRAM_BOT_API_PORT=8081`：容器内监听端口。
+- `TELEGRAM_BOT_API_ARGS="--verbosity=2"`：传给 `telegram-bot-api` 的额外参数。
+
+从本仓库本地构建镜像：
+
+```bash
+docker build -t save2telegram-backend-botserver:latest -f backend/Dockerfile.local-server backend
+```
+
+`Dockerfile.local-server` 使用 multi-stage build。编译依赖只留在 builder stage，最终镜像只把编译出的 `telegram-bot-api` 二进制复制进 Node.js 后端镜像。
 
 ## 重启和更新
 

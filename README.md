@@ -58,6 +58,7 @@ Optional backend arguments:
 - `--secret helloworld`: Optional setup secret. If set, the setup page is available at `/?secret=helloworld`; if omitted, setup is available at `/`.
 - `--host 0.0.0.0`: Backend listen host. Defaults to `0.0.0.0`.
 - `--port 3000`: Backend listen port inside the container. Defaults to `3000`.
+- `--telegram-api-base http://127.0.0.1:8081`: Telegram Bot API base URL used by the backend. Defaults to `https://api.telegram.org`. The same value can be set with `TELEGRAM_API_BASE`.
 
 The backend prints the setup URL on startup:
 
@@ -67,6 +68,39 @@ Save2Telegram setup URL: http://localhost:18080/
 
 Open that URL and click the setup button to bind the backend to the extension.
 If the extension is not installed yet, install it from the [Chrome Web Store](https://chromewebstore.google.com/detail/hibaajhphchibdfkciepacbnifbeiikc) first.
+
+## Large Video Uploads
+
+Use the `save2telegram-backend-botserver` image for large videos. It includes the official open-source Telegram Bot API server, built from `tdlib/telegram-bot-api` during the image build. The regular `save2telegram-backend` image does not include the embedded server and uses `https://api.telegram.org` unless `TELEGRAM_API_BASE` is configured.
+
+To upload large videos, provide your Telegram application `api_id` and `api_hash` at runtime. The botserver image will start the embedded Bot API server in `--local` mode on `127.0.0.1:8081`, then point the Save2Telegram backend at it automatically:
+
+```bash
+docker run -d --name save2telegram-backend -p 18080:3000 \
+  -v save2telegram-data:/app/data \
+  -v save2telegram-bot-api:/var/lib/telegram-bot-api \
+  -e TELEGRAM_API_ID=123456 \
+  -e TELEGRAM_API_HASH=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+  ghcr.io/jerrylocke/save2telegram-backend-botserver:latest \
+  --public-url http://localhost:18080
+```
+
+Get `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` from [my.telegram.org](https://my.telegram.org) under API development tools. These are not the same as your bot token and must not be committed to the repository.
+
+Optional embedded Bot API environment variables:
+
+- `TELEGRAM_BOT_API_DIR=/var/lib/telegram-bot-api`: Working directory for the embedded Bot API server. Mount it as a volume to persist its local data.
+- `TELEGRAM_BOT_API_HOST=127.0.0.1`: Listen address inside the container. Keep the default unless you need to expose it.
+- `TELEGRAM_BOT_API_PORT=8081`: Listen port inside the container.
+- `TELEGRAM_BOT_API_ARGS="--verbosity=2"`: Extra arguments passed to `telegram-bot-api`.
+
+To build the image locally from this repository:
+
+```bash
+docker build -t save2telegram-backend-botserver:latest -f backend/Dockerfile.local-server backend
+```
+
+`Dockerfile.local-server` uses a multi-stage build. Build dependencies stay in the builder stage; the final image only copies the compiled `telegram-bot-api` binary into the Node.js backend image.
 
 ## Restarting and Updating
 

@@ -1,5 +1,5 @@
 import http from "node:http";
-import { APP_NAME, BACKEND_VERSION, EXTENSION_ID, HOST, PORT, PUBLIC_URL } from "./config.js";
+import { APP_NAME, BACKEND_VERSION, EXTENSION_ID, HOST, PORT, PUBLIC_URL, TELEGRAM_API_BASE } from "./config.js";
 import { AppError, Err } from "./errors.js";
 import { forwardEndpoint } from "./forwarder.js";
 import { cancelForwardJob, createForwardJob, cleanupJobs, enqueueForwardJob, jobs, loadJobs, serializeJob, streamForward, touchJob } from "./jobs.js";
@@ -100,6 +100,7 @@ server.listen(PORT, HOST, () => {
     ? `${endpointUrl}/?secret=${SERVER_SECRET}`
     : `${endpointUrl}/`;
   console.info(`${APP_NAME} backend v${BACKEND_VERSION} listening on ${HOST}:${PORT}`);
+  console.info(`${APP_NAME} Telegram API base: ${TELEGRAM_API_BASE}`);
   console.info(`${APP_NAME} setup URL: ${setupUrl}`);
   if (EXTENSION_ID) {
     console.info(`${APP_NAME} extension store URL: https://chromewebstore.google.com/detail/${EXTENSION_ID}`);

@@ -475,9 +475,11 @@ button:disabled {
 .status-error {
   --progress-color: rgba(255, 77, 79, 0.08);
   --accent-color: #ff4d4f;
-  background:
-    linear-gradient(90deg, var(--progress-color) 0 var(--progress), transparent var(--progress) 100%),
-    #ffffff;
+  background: #fff7f7;
+}
+
+.status-error:hover {
+  background: #fff1f1;
 }
 
 .status-error .queue-percent:not(.retry-inline) {

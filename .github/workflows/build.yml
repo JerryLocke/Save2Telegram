@@ -11,16 +11,13 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version used for the extension manifest, CRX/zip filenames, and image tag, for example 0.1.0"
+        description: "Release version used for the extension manifest, artifact names, and image tags, for example 0.1.0"
         required: false
         type: string
 
 permissions:
   contents: read
   packages: write
-
-env:
-  IMAGE_NAME: save2telegram-backend
 
 jobs:
   prepare:
@@ -81,13 +78,12 @@ jobs:
           fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
           NODE
 
-      - name: Create extension zip
+      - name: Stage extension artifact
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          mkdir -p dist
-          cd crx
-          zip -r "../dist/save2telegram-extension-${VERSION}.zip" .
+          mkdir -p "dist/save2telegram-extension-${VERSION}"
+          cp -R crx/. "dist/save2telegram-extension-${VERSION}/"
 
       - name: Install Chromium for CRX signing
         if: ${{ env.CHROME_EXTENSION_PRIVATE_KEY_B64 != '' }}
@@ -106,11 +102,11 @@ jobs:
           mv crx.crx "dist/save2telegram-extension-${{ needs.prepare.outputs.version }}.crx"
           rm -f extension.pem
 
-      - name: Upload extension zip
+      - name: Upload extension artifact
         uses: actions/upload-artifact@v4
         with:
-          name: save2telegram-extension-${{ needs.prepare.outputs.version }}-zip
-          path: dist/save2telegram-extension-${{ needs.prepare.outputs.version }}.zip
+          name: save2telegram-extension-${{ needs.prepare.outputs.version }}
+          path: dist/save2telegram-extension-${{ needs.prepare.outputs.version }}/**
           if-no-files-found: error
 
       - name: Upload signed CRX
@@ -120,11 +116,20 @@ jobs:
           name: save2telegram-extension-${{ needs.prepare.outputs.version }}-crx
           path: dist/save2telegram-extension-${{ needs.prepare.outputs.version }}.crx
           if-no-files-found: error
+          compression-level: 0
 
   image:
-    name: Build backend image
+    name: Build backend image (${{ matrix.image_name }})
     runs-on: ubuntu-latest
     needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image_name: save2telegram-backend
+            dockerfile: backend/Dockerfile
+          - image_name: save2telegram-backend-botserver
+            dockerfile: backend/Dockerfile.local-server
 
     steps:
       - name: Checkout
@@ -147,7 +152,7 @@ jobs:
 
       - name: Resolve image name
         id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ matrix.image_name }}" >> "$GITHUB_OUTPUT"
 
       - name: Docker metadata
         id: meta
@@ -175,9 +180,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: backend
-          file: backend/Dockerfile
+          file: ${{ matrix.dockerfile }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.image_name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image_name }}

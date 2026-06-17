@@ -144,7 +144,7 @@
     "message": "拖动排序"
   },
   "popup_page": {
-    "message": "第  页"
+    "message": "第 $1 页"
   },
   "popup_saveConfigFailed": {
     "message": "新增配置需要填写备注、Bot Token 和 Channel ID。"

@@ -29,6 +29,7 @@ function normalizeKey(key) {
 
 const args = parseArgs(process.argv.slice(2));
 const DEFAULT_EXTENSION_ID = "hibaajhphchibdfkciepacbnifbeiikc";
+const DEFAULT_TELEGRAM_API_BASE = "https://api.telegram.org";
 const packageJson = JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 
 export const PORT = Number(args.port || process.env.PORT || 3000);
@@ -38,3 +39,12 @@ export const EXTENSION_ID = String(args.extensionId || DEFAULT_EXTENSION_ID).tri
 export const SERVER_SECRET = String(args.secret || "").trim();
 export const APP_NAME = String(args.appName || "Save2Telegram").trim() || "Save2Telegram";
 export const BACKEND_VERSION = String(packageJson.version || "0.0.0");
+export const TELEGRAM_API_BASE = normalizeUrl(args.telegramApiBase || process.env.TELEGRAM_API_BASE || DEFAULT_TELEGRAM_API_BASE);
+
+function normalizeUrl(value) {
+  const url = String(value || "").trim() || DEFAULT_TELEGRAM_API_BASE;
+  if (!/^https?:\/\//i.test(url)) {
+    throw new Error(`Invalid Telegram API base URL: ${url}`);
+  }
+  return url.replace(/\/+$/, "");
+}
