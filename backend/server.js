@@ -7,6 +7,7 @@ import { createRequestContext, logForwardRequest, logRequestEnd, logRequestStart
 import { getEndpointUrl, getRequestOrigin, normalizeEndpointUrl, readJsonBody, sendHtml, sendJson, sendOptions } from "./http-utils.js";
 import { renderSetupPage, resolveSetupLocale } from "./setup-page.js";
 import { createUserKey, requireSetupSecret, requireUserByBearer, SERVER_SECRET } from "./auth.js";
+import { cleanupStaleUploadFiles } from "./upload-file.js";
 const NORMALIZED_PUBLIC_URL = normalizeEndpointUrl(PUBLIC_URL);
 /** Main HTTP server: routes requests for setup, health, key management, and media forwarding. */
 const server = http.createServer(async (req, res) => {
@@ -92,6 +93,16 @@ const server = http.createServer(async (req, res) => {
     logRequestEnd(req, context);
   }
 });
+// Remove temp upload files that may have survived a hard process/container kill.
+try {
+  const cleanedUploadTempDirs = await cleanupStaleUploadFiles();
+  if (cleanedUploadTempDirs > 0) {
+    console.info(`${APP_NAME} cleaned ${cleanedUploadTempDirs} stale upload temp director${cleanedUploadTempDirs === 1 ? "y" : "ies"}.`);
+  }
+} catch (error) {
+  console.warn(`${APP_NAME} failed to clean stale upload temp files:`, error);
+}
+
 // Restore persisted jobs on startup
 await loadJobs();
 server.listen(PORT, HOST, () => {

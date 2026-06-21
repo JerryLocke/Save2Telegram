@@ -5,6 +5,7 @@ importScripts('lib/i18n.js');
   function __t(key, subs) { return __i18nReady ? Save2TG.I18n.t(key, subs) : key; }
   const TELEGRAM_API_BASE = "https://api.telegram.org";
   const QUEUE_KEY = "forwardQueue";
+  const DRAFT_KEY = "forwardDraft";
   const TELEGRAM_CONFIGS_KEY = "telegramConfigs";
   const GENERAL_SETTINGS_KEY = "generalSettings";
   const UI_LANGUAGE_KEY = "uiLanguage";
@@ -17,12 +18,14 @@ importScripts('lib/i18n.js');
   };
   const ALLOWED_COMPLETED_RECORD_COUNTS = [5, 10, 30];
   const VIDEO_HOST_PATTERN = /^https:\/\/video\.twimg\.com\//;
-  const MAX_CAPTURED_VIDEO_URLS_PER_TAB = 80;
+  const TELEGRAM_MEDIA_GROUP_MAX_ITEMS = 10;
+  const TELEGRAM_PHOTO_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
+  const TELEGRAM_FILE_UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
+  const MAX_CAPTURED_GRAPHQL_URLS_PER_TAB = 20;
   const TELEGRAM_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
   const TELEGRAM_SEND_MIN_INTERVAL_MS = 1250;
   const FORWARD_ENDPOINT_BINDING_TIMEOUT_MS = 2 * 60 * 1000;
   const MAX_CONCURRENT_FORWARD_TASKS = 3;
-  const RETRY_SEND_DELAY_MS = 1500;
   let queueProcessingPromise = null;
   let queueUpdatePromise = Promise.resolve();
   const activeQueueItemIds = new Set();
@@ -30,7 +33,7 @@ importScripts('lib/i18n.js');
   const activeQueueAbortControllers = new Map();
   const telegramSendQueuesByChat = new Map();
   const telegramLastSendAtByChat = new Map();
-  const capturedVideoUrlsByTab = new Map();
+  const capturedGraphqlRequestsByTab = new Map();
   const pendingForwardEndpointBindings = new Map();
   // ==================== Architecture ====================
   // Popup/UI  --chrome.runtime.sendMessage--> Service Worker (SW)
@@ -40,27 +43,52 @@ importScripts('lib/i18n.js');
   // SW always writes progress to chrome.storage (forwardQueue)
   // Popup reads queue from chrome.storage via GET_FORWARD_QUEUE, unaware of local/remote difference
   // ================================================================
-  if (chrome.webRequest?.onBeforeRequest) {
-    chrome.webRequest.onBeforeRequest.addListener(
+  if (chrome.webRequest?.onBeforeSendHeaders) {
+    chrome.webRequest.onBeforeSendHeaders?.addListener(
       (details) => {
-        if (details.tabId < 0 || !isDownloadableTwitterVideoUrl(details.url)) {
+        if (details.tabId < 0 || !isTweetGraphqlUrl(details.url)) {
           return;
         }
-        rememberCapturedVideoUrl(details.tabId, details.url);
+        rememberCapturedGraphqlRequest(details.tabId, details.url, details.requestHeaders || []);
       },
-      { urls: ["https://video.twimg.com/*"] }
+      { urls: ["https://x.com/i/api/graphql/*", "https://twitter.com/i/api/graphql/*"] },
+      ["requestHeaders", "extraHeaders"]
     );
   }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message?.type === "GET_CAPTURED_VIDEO_CANDIDATES") {
+    if (message?.type === "GET_CAPTURED_TWEET_GRAPHQL_REQUESTS") {
       const tabId = _sender?.tab?.id;
-      const capturedUrls = Number.isInteger(tabId) ? (capturedVideoUrlsByTab.get(tabId) || []) : [];
-      sendResponse({ ok: true, result: capturedUrls });
+      const capturedRequests = Number.isInteger(tabId) ? (capturedGraphqlRequestsByTab.get(tabId) || []) : [];
+      sendResponse({ ok: true, result: capturedRequests });
       return false;
     }
     if (message?.type === "FORWARD_TWITTER_MEDIA") {
       enqueueForward(message.payload, _sender, message.configId)
         .then((item) => sendResponse({ ok: true, result: item }))
+        .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+      return true;
+    }
+    if (message?.type === "GET_FORWARD_DRAFT") {
+      getPublicForwardDraft()
+        .then((draft) => sendResponse({ ok: true, result: draft }))
+        .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+      return true;
+    }
+    if (message?.type === "TOGGLE_FORWARD_DRAFT_MEDIA") {
+      toggleForwardDraftMedia(message.payload, message.configId, message.sourceKey, { preferConfig: message.preferConfig })
+        .then((result) => sendResponse({ ok: true, result }))
+        .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+      return true;
+    }
+    if (message?.type === "SEND_FORWARD_DRAFT") {
+      sendForwardDraft(message.payload, _sender, message.configId, message.sourceKey, { preferConfig: message.preferConfig })
+        .then((result) => sendResponse({ ok: true, result }))
+        .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+      return true;
+    }
+    if (message?.type === "CLEAR_FORWARD_DRAFT") {
+      clearForwardDraft()
+        .then(() => sendResponse({ ok: true, result: null }))
         .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
       return true;
     }
@@ -196,17 +224,16 @@ importScripts('lib/i18n.js');
     processQueue();
   });
   /** Add a tweet to the forward queue and start processing. */
-  async function enqueueForward(payload, sender, configId = "") {
+  async function enqueueForward(payload, sender, configId = "", options = {}) {
     if (!payload?.tweetUrl) {
       throw new Error(__t("bg_noTweetUrl"));
     }
+    assertForwardablePayload(payload);
     const config = await getTelegramConfigForSend(configId);
-    const tabId = sender?.tab?.id;
-    const normalizedPayload = tabId === undefined ? payload : mergeCapturedVideoCandidates(payload, tabId);
     const item = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       status: "pending",
-      payload: normalizedPayload,
+      payload,
       telegramConfigId: config.id,
       telegramConfigLabel: getTelegramConfigLabel(config),
       telegramChatKey: getTelegramChatKey(config),
@@ -222,7 +249,11 @@ importScripts('lib/i18n.js');
       updatedAt: Date.now()
     };
     await updateQueue((queue) => {
-      const existing = queue.find((entry) => entry.payload?.tweetUrl === normalizedPayload.tweetUrl &&
+      if (options.force) {
+        return [...queue, item];
+      }
+
+      const existing = queue.find((entry) => entry.payload?.tweetUrl === payload.tweetUrl &&
         entry.telegramConfigId === config.id &&
         entry.status !== "error" &&
         entry.status !== "sent");
@@ -232,6 +263,298 @@ importScripts('lib/i18n.js');
     processQueue();
     return item;
   }
+
+  async function getForwardDraft() {
+    const data = await chrome.storage.local.get(DRAFT_KEY);
+    return normalizeForwardDraft(data[DRAFT_KEY]);
+  }
+
+  async function getPublicForwardDraft() {
+    return serializeForwardDraft(await getForwardDraft());
+  }
+
+  async function writeForwardDraft(draft) {
+    const normalized = normalizeForwardDraft(draft);
+    if (!normalized) {
+      await clearForwardDraft();
+      return null;
+    }
+
+    await chrome.storage.local.set({ [DRAFT_KEY]: normalized });
+    return normalized;
+  }
+
+  async function clearForwardDraft() {
+    await chrome.storage.local.remove(DRAFT_KEY);
+    return null;
+  }
+
+  async function toggleForwardDraftMedia(payload, configId = "", sourceKey = "", options = {}) {
+    const currentDraft = await getForwardDraft();
+    const entries = createDraftEntries(payload, sourceKey);
+    if (!entries.length) {
+      throw new Error(__t("bg_noDraftMedia"));
+    }
+
+    const normalizedSourceKey = entries[0].sourceKey;
+    const hasSource = currentDraft?.items?.some((item) => item.sourceKey === normalizedSourceKey);
+    if (hasSource) {
+      const nextItems = currentDraft.items.filter((item) => item.sourceKey !== normalizedSourceKey);
+      if (!nextItems.length) {
+        await clearForwardDraft();
+        return { action: "removed", draft: null };
+      }
+
+      const nextDraft = await writeForwardDraft({
+        ...currentDraft,
+        items: nextItems,
+        updatedAt: Date.now()
+      });
+      return { action: "removed", draft: serializeForwardDraft(nextDraft) };
+    }
+
+    const config = await resolveDraftConfig(currentDraft, configId, options);
+    const nextItems = mergeDraftEntries(currentDraft?.items || [], entries);
+    const now = Date.now();
+    const nextDraft = await writeForwardDraft({
+      id: currentDraft?.id || createForwardDraftId(),
+      version: 1,
+      telegramConfigId: config.id,
+      telegramConfigLabel: getTelegramConfigLabel(config),
+      firstTweet: currentDraft?.firstTweet || entries[0].tweet,
+      items: nextItems,
+      createdAt: currentDraft?.createdAt || now,
+      updatedAt: now
+    });
+
+    return { action: "added", draft: serializeForwardDraft(nextDraft) };
+  }
+
+  async function sendForwardDraft(payload, sender, configId = "", sourceKey = "", options = {}) {
+    const currentDraft = await getForwardDraft();
+    const entries = createDraftEntries(payload, sourceKey);
+    let draft = currentDraft;
+
+    if (!draft && entries.length) {
+      const config = await resolveDraftConfig(null, configId, options);
+      const now = Date.now();
+      draft = {
+        id: createForwardDraftId(),
+        version: 1,
+        telegramConfigId: config.id,
+        telegramConfigLabel: getTelegramConfigLabel(config),
+        firstTweet: entries[0].tweet,
+        items: entries,
+        createdAt: now,
+        updatedAt: now
+      };
+    } else if (draft && entries.length && !draft.items.some((item) => item.sourceKey === entries[0].sourceKey)) {
+      const config = await resolveDraftConfig(draft, configId, options);
+      draft = {
+        ...draft,
+        telegramConfigId: config.id,
+        telegramConfigLabel: getTelegramConfigLabel(config),
+        items: mergeDraftEntries(draft.items, entries),
+        updatedAt: Date.now()
+      };
+    }
+
+    draft = normalizeForwardDraft(draft);
+    if (!draft?.items?.length) {
+      throw new Error(__t("bg_emptyDraft"));
+    }
+
+    await writeForwardDraft(draft);
+    const config = await resolveDraftConfig(draft, configId, options);
+    const item = await enqueueForward(buildPayloadFromDraft(draft), sender, config.id, { force: true });
+    await clearForwardDraft();
+    return { item, draft: null };
+  }
+
+  async function resolveDraftConfig(currentDraft, configId = "", options = {}) {
+    const requestedId = String(configId || "").trim();
+    const currentId = String(currentDraft?.telegramConfigId || "").trim();
+    const selectedId = options?.preferConfig ? (requestedId || currentId) : (currentId || requestedId);
+    return getTelegramConfigForSend(selectedId);
+  }
+
+  function createForwardDraftId() {
+    return `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function createDraftEntries(payload, sourceKey = "") {
+    const tweet = sanitizeDraftTweet(payload);
+    const normalizedSourceKey = String(sourceKey || "").trim() || `tweet:${tweet.tweetId || tweet.tweetUrl}`;
+    return getPayloadMediaItems(payload)
+      .map((media, index) => {
+        const sanitizedMedia = sanitizeDraftMedia(media);
+        if (!sanitizedMedia) {
+          return null;
+        }
+
+        return {
+          sourceKey: normalizedSourceKey,
+          mediaKey: getDraftMediaKey(sanitizedMedia, tweet, index),
+          tweet,
+          media: sanitizedMedia,
+          addedAt: Date.now()
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function mergeDraftEntries(existingItems, entries) {
+    const seen = new Set((Array.isArray(existingItems) ? existingItems : []).map((item) => item.mediaKey));
+    const next = [...(Array.isArray(existingItems) ? existingItems : [])];
+    for (const entry of entries) {
+      if (seen.has(entry.mediaKey)) {
+        continue;
+      }
+
+      seen.add(entry.mediaKey);
+      next.push(entry);
+    }
+    return next;
+  }
+
+  function normalizeForwardDraft(draft) {
+    if (!draft || typeof draft !== "object") {
+      return null;
+    }
+
+    const items = (Array.isArray(draft.items) ? draft.items : [])
+      .map(normalizeDraftItem)
+      .filter(Boolean);
+    if (!items.length) {
+      return null;
+    }
+
+    return {
+      id: String(draft.id || "").trim() || createForwardDraftId(),
+      version: 1,
+      telegramConfigId: String(draft.telegramConfigId || "").trim(),
+      telegramConfigLabel: String(draft.telegramConfigLabel || "").trim(),
+      firstTweet: sanitizeDraftTweet(draft.firstTweet || items[0].tweet),
+      items,
+      createdAt: Number(draft.createdAt || Date.now()),
+      updatedAt: Number(draft.updatedAt || Date.now())
+    };
+  }
+
+  function normalizeDraftItem(item) {
+    const media = sanitizeDraftMedia(item?.media);
+    if (!media) {
+      return null;
+    }
+
+    const tweet = sanitizeDraftTweet(item?.tweet);
+    const sourceKey = String(item?.sourceKey || "").trim() || `tweet:${tweet.tweetId || tweet.tweetUrl}`;
+    return {
+      sourceKey,
+      mediaKey: String(item?.mediaKey || "").trim() || getDraftMediaKey(media, tweet, 0),
+      tweet,
+      media,
+      addedAt: Number(item?.addedAt || Date.now())
+    };
+  }
+
+  function sanitizeDraftTweet(value) {
+    const tweetUrl = String(value?.tweetUrl || "").trim();
+    return {
+      tweetUrl,
+      tweetId: String(value?.tweetId || getTweetIdFromUrl(tweetUrl)).trim(),
+      author: String(value?.author || "").trim(),
+      text: String(value?.text || "").trim()
+    };
+  }
+
+  function sanitizeDraftMedia(media) {
+    const type = media?.type === "video" ? "video" : (media?.type === "photo" ? "photo" : "");
+    if (!type) {
+      return null;
+    }
+
+    const candidates = Array.isArray(media?.candidates)
+      ? media.candidates.map((url) => String(url || "").trim()).filter(Boolean).slice(0, 8)
+      : [];
+    const url = String(media?.url || candidates[0] || "").trim();
+    const thumbnail = String(media?.thumbnail || "").trim();
+
+    if (type === "photo" && !url) {
+      return null;
+    }
+    if (type === "video" && !url && !candidates.length) {
+      return null;
+    }
+
+    return {
+      type,
+      url,
+      thumbnail,
+      sourceId: String(media?.sourceId || "").trim(),
+      candidates
+    };
+  }
+
+  function getDraftMediaKey(media, tweet, index) {
+    const identity = media.type === "video"
+      ? (media.sourceId || media.url || media.candidates?.[0] || "")
+      : (media.url || media.thumbnail || "");
+    return `${media.type}:${identity || `${tweet.tweetId || tweet.tweetUrl}:${index}`}`;
+  }
+
+  function serializeForwardDraft(draft) {
+    const normalized = normalizeForwardDraft(draft);
+    if (!normalized) {
+      return null;
+    }
+
+    const mediaItems = normalized.items.map((item) => item.media);
+    const counts = getDraftMediaCounts(mediaItems);
+    return {
+      ...normalized,
+      mediaItems,
+      count: mediaItems.length,
+      photoCount: counts.photoCount,
+      videoCount: counts.videoCount
+    };
+  }
+
+  function getDraftMediaCounts(mediaItems) {
+    return {
+      photoCount: mediaItems.filter((media) => media.type === "photo").length,
+      videoCount: mediaItems.filter((media) => media.type === "video").length
+    };
+  }
+
+  function buildPayloadFromDraft(draft) {
+    const mediaItems = draft.items.map((item) => ({
+      ...item.media,
+      draftMediaKey: item.mediaKey,
+      draftSourceKey: item.sourceKey
+    }));
+    const firstTweet = draft.firstTweet || draft.items[0]?.tweet || {};
+    return {
+      tweetUrl: firstTweet.tweetUrl || "",
+      tweetId: firstTweet.tweetId || getTweetIdFromUrl(firstTweet.tweetUrl || ""),
+      author: firstTweet.author || "",
+      text: firstTweet.text || "",
+      media: mediaItems[0] || null,
+      mediaItems,
+      originalMediaItems: mediaItems,
+      batchDraftId: draft.id,
+      sourceTweetUrls: [...new Set(draft.items.map((item) => item.tweet?.tweetUrl).filter(Boolean))]
+    };
+  }
+
+  function getTweetIdFromUrl(url) {
+    try {
+      return new URL(url).pathname.match(/\/status\/(\d+)/)?.[1] || "";
+    } catch {
+      return "";
+    }
+  }
+
   async function getTelegramConfigs() {
     const data = await chrome.storage.sync.get([TELEGRAM_CONFIGS_KEY, "botToken", "chatId"]);
     const configs = normalizeTelegramConfigs(data[TELEGRAM_CONFIGS_KEY]);
@@ -623,47 +946,55 @@ importScripts('lib/i18n.js');
   function createTelegramConfigId() {
     return `tg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
-  function rememberCapturedVideoUrl(tabId, url) {
-    const urls = capturedVideoUrlsByTab.get(tabId) || [];
-    const nextUrls = urls.filter((candidate) => candidate !== url);
-    nextUrls.push(url);
-    while (nextUrls.length > MAX_CAPTURED_VIDEO_URLS_PER_TAB) {
-      nextUrls.shift();
+  function rememberCapturedGraphqlRequest(tabId, url, requestHeaders) {
+    const headers = sanitizeGraphqlHeaders(requestHeaders);
+    if (!headers.authorization || !headers["x-csrf-token"]) {
+      return;
     }
-    capturedVideoUrlsByTab.set(tabId, nextUrls);
+
+    const requests = capturedGraphqlRequestsByTab.get(tabId) || [];
+    const nextRequests = requests.filter((candidate) => candidate.url !== url);
+    nextRequests.push({ url, headers });
+    while (nextRequests.length > MAX_CAPTURED_GRAPHQL_URLS_PER_TAB) {
+      nextRequests.shift();
+    }
+    capturedGraphqlRequestsByTab.set(tabId, nextRequests);
   }
-  /** Merge video candidates captured by webRequest into the tweet payload. */
-  function mergeCapturedVideoCandidates(payload, tabId) {
-    const capturedUrls = capturedVideoUrlsByTab.get(tabId) || [];
-    if (!capturedUrls.length) {
-      return payload;
-    }
-    if (Array.isArray(payload?.mediaItems)) {
-      return {
-        ...payload,
-        mediaItems: payload.mediaItems.map((item) => mergeVideoCandidatesIntoMedia(item, capturedUrls)),
-        media: mergeVideoCandidatesIntoMedia(payload.media, capturedUrls)
-      };
-    }
-    if (!payload?.media || payload.media.type !== "video") {
-      return payload;
-    }
-    return {
-      ...payload,
-      media: mergeVideoCandidatesIntoMedia(payload.media, capturedUrls)
-    };
+  function sanitizeGraphqlHeaders(requestHeaders) {
+    const allowedHeaders = new Set([
+      "authorization",
+      "content-type",
+      "x-csrf-token",
+      "x-twitter-active-user",
+      "x-twitter-auth-type",
+      "x-twitter-client-language"
+    ]);
+    return (Array.isArray(requestHeaders) ? requestHeaders : [])
+      .reduce((headers, header) => {
+        const name = String(header?.name || "").toLowerCase();
+        const value = typeof header?.value === "string" ? header.value : "";
+        if (allowedHeaders.has(name) && value) {
+          headers[name] = value;
+        }
+        return headers;
+      }, {});
   }
-  function mergeVideoCandidatesIntoMedia(media, capturedUrls) {
-    if (!media || media.type !== "video") {
-      return media;
+  function isTweetGraphqlUrl(url) {
+    if (typeof url !== "string" || !url.includes("/i/api/graphql/")) {
+      return false;
     }
-    return {
-      ...media,
-      candidates: [
-        ...(Array.isArray(media.candidates) ? media.candidates : []),
-        ...capturedUrls
-      ]
-    };
+
+    return isDirectTweetGraphqlOperation(getGraphqlOperationName(url));
+  }
+  function getGraphqlOperationName(url) {
+    try {
+      return new URL(url).pathname.match(/\/i\/api\/graphql\/[^/]+\/([^/?#]+)/)?.[1] || "";
+    } catch {
+      return "";
+    }
+  }
+  function isDirectTweetGraphqlOperation(operationName) {
+    return operationName === "TweetResultByRestId" || operationName === "TweetDetail";
   }
   /** Reset a failed queue item to pending and retry. */
   async function retryQueueItem(id) {
@@ -695,13 +1026,12 @@ importScripts('lib/i18n.js');
         phaseProgress: 0,
         lastError: "",
         retryAfterUntil: 0,
-        retryNotBefore: Date.now() + RETRY_SEND_DELAY_MS,
+        retryNotBefore: 0,
         remoteJobId: "",
         updatedAt: Date.now()
       };
     }));
     processQueue();
-    setTimeout(processQueue, RETRY_SEND_DELAY_MS + 50);
     return getVisibleQueue();
   }
   /** Remove a queue item by ID. */
@@ -1029,8 +1359,14 @@ importScripts('lib/i18n.js');
     async downloadVideo(payload, queueItemId, progressScope = {}, signal = null) {
       return downloadTwitterVideo(payload, queueItemId, progressScope, signal);
     }
+    async downloadPhoto(media, queueItemId, progressScope = {}, signal = null) {
+      return downloadTwitterPhoto(media, queueItemId, progressScope, signal);
+    }
     async sendPhoto(botToken, chatId, photo, caption, queueItemId = "", signal = null) {
       return sendTelegramPhoto(botToken, chatId, photo, caption, queueItemId, signal);
+    }
+    async sendPhotoFile(botToken, chatId, photoFile, caption, queueItemId = "", signal = null) {
+      return sendTelegramPhotoFile(botToken, chatId, photoFile, caption, queueItemId, signal);
     }
     async sendVideoFile(botToken, chatId, videoFile, caption, queueItemId = "", signal = null) {
       return sendTelegramVideoFile(botToken, chatId, videoFile, caption, queueItemId, signal);
@@ -1065,7 +1401,9 @@ importScripts('lib/i18n.js');
         url: item.url,
         candidates: item.candidates || [],
         thumbnail: item.thumbnail || '',
-        order: item.order || 0
+        order: item.order || 0,
+        draftMediaKey: item.draftMediaKey || "",
+        draftSourceKey: item.draftSourceKey || ""
       }));
       const requestBody = {
         payload: { tweetUrl: payload.tweetUrl || "", caption, mediaItems },
@@ -1116,6 +1454,7 @@ importScripts('lib/i18n.js');
         throw new Error("Progress response malformed");
       }
       const job = data.job;
+      await removeSentDraftMediaKeysByQueueItem(queueItemId, job.sentDraftMediaKeys);
       if (job.status === "sent") return job.result;
       if (job.status === "cancelled") {
         await markQueueItem(queueItemId, { remoteJobId: "", updatedAt: Date.now() });
@@ -1158,6 +1497,7 @@ importScripts('lib/i18n.js');
               jobId = data.id;
               await markQueueItem(queueItemId, { remoteJobId: jobId });
             }
+            await removeSentDraftMediaKeysByQueueItem(queueItemId, data.sentDraftMediaKeys);
             await markQueueItem(queueItemId, {
               phase: data.phase || "pending",
               progress: data.progress || 0,
@@ -1169,6 +1509,7 @@ importScripts('lib/i18n.js');
           } else if (event === "result") {
             return jobId;
           } else if (event === "error") {
+            await removeSentDraftMediaKeysByQueueItem(queueItemId, data?.sentDraftMediaKeys || data?.job?.sentDraftMediaKeys);
             await markQueueItem(queueItemId, { remoteJobId: "", updatedAt: Date.now() });
             const err = new Error(data?.error || "Backend forward failed");
             err.code = data?.code || "TELEGRAM_API_ERROR";
@@ -1212,6 +1553,7 @@ importScripts('lib/i18n.js');
         const data = await res.json().catch(() => null);
         if (!data?.ok || !data?.job) throw new Error("Progress response malformed");
         const job = data.job;
+        await removeSentDraftMediaKeysByQueueItem(queueItemId, job.sentDraftMediaKeys);
         await markQueueItem(queueItemId, {
           phase: job.phase || "pending",
           progress: job.progress || 0,
@@ -1276,15 +1618,26 @@ importScripts('lib/i18n.js');
         itemIndex: 0,
         itemTotal: 1
       }, signal);
+      assertTelegramUploadSize(videoFile.size || videoFile.blob.size || 0, "video");
       await markTelegramUploadProgress(queueItemId, videoFile);
-      return endpoint.sendVideoFile(botToken, chatId, videoFile, caption, queueItemId, signal);
+      const result = await endpoint.sendVideoFile(botToken, chatId, videoFile, caption, queueItemId, signal);
+      await removeSentQueueMedia(queueItemId, [media]);
+      return result;
     }
     if (!media?.url || media.url.startsWith("blob:")) {
       await appendQueueDebugLog(queueItemId, "Media URL cannot be sent directly, falling back to text message");
       return endpoint.sendMessage(botToken, chatId, caption || tweetUrl, queueItemId, signal);
     }
-    await appendQueueDebugLog(queueItemId, "Sending photo URL");
-    return endpoint.sendPhoto(botToken, chatId, media.url, caption, queueItemId, signal);
+    await appendQueueDebugLog(queueItemId, "Downloading photo");
+    const photoFile = await endpoint.downloadPhoto(media, queueItemId, {
+      itemIndex: 0,
+      itemTotal: 1
+    }, signal);
+    assertTelegramUploadSize(photoFile.size || photoFile.blob.size || 0, "photo");
+    await markTelegramUploadProgress(queueItemId, photoFile);
+    const result = await endpoint.sendPhotoFile(botToken, chatId, photoFile, caption, queueItemId, signal);
+    await removeSentQueueMedia(queueItemId, [media]);
+    return result;
   }
   /** Extract and filter media items (photo/video) from a tweet payload. */
   function getPayloadMediaItems(payload) {
@@ -1292,29 +1645,87 @@ importScripts('lib/i18n.js');
     const items = mediaItems.length ? mediaItems : (payload?.media ? [payload.media] : []);
     return items.filter((item) => item?.type === "photo" || item?.type === "video");
   }
+  function assertForwardablePayload(payload) {
+    const mediaItems = getPayloadMediaItems(payload);
+    if (!mediaItems.length) {
+      throw new Error(__t("bg_noMedia"));
+    }
+
+    if (mediaItems.some((media) => media.type === "video" && !hasDownloadableVideoCandidate(media))) {
+      throw new Error(__t("bg_noDownloadableVideo"));
+    }
+  }
+  function hasDownloadableVideoCandidate(media) {
+    return [
+      media?.url,
+      ...(Array.isArray(media?.candidates) ? media.candidates : [])
+    ]
+      .map((url) => typeof url === "string" ? cleanEscapedUrl(url) : "")
+      .some((url) => url && !url.startsWith("blob:") && isDownloadableTwitterVideoUrl(url));
+  }
+  function cleanEscapedUrl(url) {
+    return url
+      .replaceAll("\\/", "/")
+      .replaceAll("&amp;", "&")
+      .replace(/\\u0026/g, "&");
+  }
   /** Send multiple media items as a Telegram album via the endpoint. */
   async function forwardTelegramMediaGroup(endpoint, botToken, chatId, payload, mediaItems, caption, queueItemId, signal = null) {
+    const chunks = sliceMediaGroupChunks(mediaItems);
+    const results = [];
+    let itemOffset = 0;
+
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      if (chunks.length > 1) {
+        await appendQueueDebugLog(queueItemId, `Sending media group part ${index + 1}/${chunks.length}`);
+      }
+
+      const result = await forwardTelegramMediaGroupChunk(endpoint, botToken, chatId, payload, chunk, index === 0 ? caption : "", queueItemId, signal, {
+        itemOffset,
+        itemTotal: mediaItems.length
+      });
+      results.push(result);
+      await removeSentQueueMedia(queueItemId, chunk);
+      itemOffset += chunk.length;
+      await markMediaGroupUploadProgress(queueItemId, itemOffset, mediaItems.length);
+    }
+
+    return results;
+  }
+
+  async function forwardTelegramMediaGroupChunk(endpoint, botToken, chatId, payload, albumItems, caption, queueItemId, signal = null, progressScope = {}) {
     const form = new FormData();
     const album = [];
     let attachmentIndex = 0;
-    const albumItems = mediaItems.slice(0, 10);
-    const downloadableVideos = albumItems.filter((item) => item.type === "video");
     const downloadedFiles = [];
-    for (const item of albumItems) {
+    for (let index = 0; index < albumItems.length; index += 1) {
+      const item = albumItems[index];
       if (item.type === "photo" && item.url && !item.url.startsWith("blob:")) {
-        await appendQueueDebugLog(queueItemId, "Adding photo to media group");
-        album.push({ type: "photo", media: item.url });
+        await appendQueueDebugLog(queueItemId, "Downloading media group photo");
+        const photoFile = await endpoint.downloadPhoto(item, queueItemId, {
+          itemIndex: Number(progressScope.itemOffset || 0) + index,
+          itemTotal: Number(progressScope.itemTotal || albumItems.length)
+        }, signal);
+        assertTelegramUploadSize(photoFile.size || photoFile.blob.size || 0, "photo");
+        downloadedFiles.push(photoFile);
+        await markDownloadedFilesSize(queueItemId, downloadedFiles);
+        const attachmentName = `media${attachmentIndex}`;
+        attachmentIndex += 1;
+        form.set(attachmentName, photoFile.blob, photoFile.filename);
+        album.push({ type: "photo", media: `attach://${attachmentName}` });
         continue;
       }
       if (item.type === "video") {
         await appendQueueDebugLog(queueItemId, "Downloading media group video");
         const videoFile = await endpoint.downloadVideo({ ...payload, media: item }, queueItemId, {
-          itemIndex: attachmentIndex,
-          itemTotal: downloadableVideos.length || 1
+          itemIndex: Number(progressScope.itemOffset || 0) + index,
+          itemTotal: Number(progressScope.itemTotal || albumItems.length)
         }, signal);
+        assertTelegramUploadSize(videoFile.size || videoFile.blob.size || 0, "video");
         downloadedFiles.push(videoFile);
         await markDownloadedFilesSize(queueItemId, downloadedFiles);
-        const attachmentName = `video${attachmentIndex}`;
+        const attachmentName = `media${attachmentIndex}`;
         attachmentIndex += 1;
         form.set(attachmentName, videoFile.blob, videoFile.filename);
         album.push({
@@ -1324,7 +1735,7 @@ importScripts('lib/i18n.js');
         });
       }
     }
-    await markTelegramUploadProgress(queueItemId);
+    await markMediaGroupUploadProgress(queueItemId, Number(progressScope.itemOffset || 0), Number(progressScope.itemTotal || albumItems.length), downloadedFiles);
     if (!album.length) {
       await appendQueueDebugLog(queueItemId, "Media group empty, falling back to text message");
       return endpoint.sendMessage(botToken, chatId, caption || payload?.tweetUrl || "", queueItemId, signal);
@@ -1345,22 +1756,95 @@ importScripts('lib/i18n.js');
   }
   /** Send a single media item that was part of a group, using the appropriate API. */
   async function sendSingleAlbumItem(endpoint, botToken, chatId, item, caption, form, queueItemId, signal = null) {
-    if (item.type === "photo") {
-      return endpoint.sendPhoto(botToken, chatId, item.media, caption, queueItemId, signal);
-    }
     const attachName = item.media.replace("attach://", "");
     const file = form.get(attachName);
+    if (item.type === "photo") {
+      return endpoint.sendPhotoFile(botToken, chatId, {
+        blob: file,
+        filename: file?.name || "twitter-photo.jpg"
+      }, caption, queueItemId, signal);
+    }
     return endpoint.sendVideoFile(botToken, chatId, {
       blob: file,
       filename: file?.name || "twitter-video.mp4"
     }, caption, queueItemId, signal);
+  }
+  function sliceMediaGroupChunks(mediaItems) {
+    const chunks = [];
+    for (let index = 0; index < mediaItems.length; index += TELEGRAM_MEDIA_GROUP_MAX_ITEMS) {
+      chunks.push(mediaItems.slice(index, index + TELEGRAM_MEDIA_GROUP_MAX_ITEMS));
+    }
+    return chunks;
+  }
+  async function markMediaGroupUploadProgress(queueItemId, completedItems, totalItems, files = null) {
+    if (!queueItemId) {
+      return;
+    }
+
+    const total = Math.max(1, Number(totalItems || 1));
+    const progress = Math.min(100, Math.round((Math.max(0, Number(completedItems || 0)) / total) * 100));
+    const size = Array.isArray(files)
+      ? files.reduce((sum, file) => sum + (file.size || file.blob?.size || 0), 0)
+      : 0;
+    await updateQueue((queue) => queue.map((item) => (
+      item.id === queueItemId ? {
+        ...item,
+        progress,
+        phaseProgress: progress,
+        phase: "uploading",
+        bytesLoaded: size || item.bytesLoaded || 0,
+        bytesTotal: size || item.bytesTotal || 0,
+        updatedAt: Date.now()
+      } : item
+    )));
+  }
+  async function removeSentQueueMedia(queueItemId, sentMediaItems) {
+    const mediaKeys = (Array.isArray(sentMediaItems) ? sentMediaItems : [])
+      .map((media) => String(media?.draftMediaKey || "").trim())
+      .filter(Boolean);
+    if (!queueItemId || !mediaKeys.length) {
+      return;
+    }
+
+    const sentKeys = new Set(mediaKeys);
+    // Drafts are cleared as soon as they enter the queue, so retry state lives
+    // on the queue item itself and shrinks after each successful Telegram send.
+    await updateQueue((queue) => queue.map((item) => {
+      if (item.id !== queueItemId || !item.payload?.batchDraftId) {
+        return item;
+      }
+
+      const mediaItems = getPayloadMediaItems(item.payload);
+      const nextMediaItems = mediaItems.filter((media) => !sentKeys.has(String(media?.draftMediaKey || "").trim()));
+      return {
+        ...item,
+        payload: {
+          ...item.payload,
+          media: nextMediaItems[0] || null,
+          mediaItems: nextMediaItems
+        },
+        updatedAt: Date.now()
+      };
+    }));
+  }
+  async function removeSentDraftMediaKeysByQueueItem(queueItemId, mediaKeys) {
+    const keys = (Array.isArray(mediaKeys) ? mediaKeys : [])
+      .map((key) => String(key || "").trim())
+      .filter(Boolean);
+    if (!queueItemId || !keys.length) {
+      return;
+    }
+
+    await removeSentQueueMedia(queueItemId, keys.map((key) => ({ draftMediaKey: key })));
   }
   /** Update queue item state for the upload phase. */
   async function markTelegramUploadProgress(queueItemId, videoFile = null) {
     if (!queueItemId) {
       return;
     }
-    const size = videoFile ? (videoFile.size || videoFile.blob.size || 0) : 0;
+    const size = Array.isArray(videoFile)
+      ? videoFile.reduce((total, file) => total + (file.size || file.blob?.size || 0), 0)
+      : (videoFile ? (videoFile.size || videoFile.blob?.size || 0) : 0);
     await updateQueue((queue) => queue.map((item) => (
       item.id === queueItemId ? {
         ...item,
@@ -1369,7 +1853,7 @@ importScripts('lib/i18n.js');
         phase: "uploading",
         bytesLoaded: size || item.bytesLoaded || 0,
         bytesTotal: size || item.bytesTotal || 0,
-        debugLog: appendDebugLog(item.debugLog, `Downloaded, file size ${formatDebugBytes(size)}`),
+        debugLog: size ? appendDebugLog(item.debugLog, `Downloaded, file size ${formatDebugBytes(size)}`) : item.debugLog,
         updatedAt: Date.now()
       } : item
     )));
@@ -1397,7 +1881,7 @@ importScripts('lib/i18n.js');
       try {
         throwIfAborted(signal);
         if (candidate.includes(".m3u8")) {
-          return downloadM3u8Video(candidate, signal);
+          return downloadM3u8Video(candidate, queueItemId, progressScope, signal);
         }
         const blob = await fetchVideoBlob(candidate, progress, signal);
         return {
@@ -1414,17 +1898,34 @@ importScripts('lib/i18n.js');
     }
     throw new Error(__t("bg_videoDownloadFailed", [errors[0] || "No available video source"]));
   }
+  async function downloadTwitterPhoto(media, queueItemId, progressScope = {}, signal = null) {
+    throwIfAborted(signal);
+    const url = typeof media?.url === "string" ? media.url : "";
+    if (!url || url.startsWith("blob:")) {
+      throw new Error(__t("bg_noDraftMedia"));
+    }
+
+    const blob = await fetchBlobWithProgress(url, createDownloadProgressReporter(queueItemId, progressScope), signal, "image/jpeg");
+    return {
+      blob,
+      size: blob.size,
+      filename: getPhotoFilename(url, blob.type)
+    };
+  }
   function createDownloadProgressReporter(queueItemId, progressScope = {}) {
     if (!queueItemId) {
       return null;
     }
     const itemIndex = Math.max(0, Number(progressScope.itemIndex || 0));
     const itemTotal = Math.max(1, Number(progressScope.itemTotal || 1));
+    const partIndex = Math.max(0, Number(progressScope.partIndex || 0));
+    const partTotal = Math.max(1, Number(progressScope.partTotal || 1));
     let lastUpdateAt = 0;
     return async ({ loaded, total }) => {
       const now = Date.now();
-      // Multiple videos share the current download phase so the stage still runs 0-100%.
-      const itemRatio = total ? loaded / total : 0;
+      // Each media item gets an equal slice of the download phase.
+      const partRatio = total ? loaded / total : 0;
+      const itemRatio = (partIndex + partRatio) / partTotal;
       const progress = total
         ? Math.min(100, Math.round(((itemIndex + itemRatio) / itemTotal) * 100))
         : Math.min(100, Math.round((itemIndex / itemTotal) * 100) + 5);
@@ -1436,8 +1937,8 @@ importScripts('lib/i18n.js');
         phase: "downloading",
         progress,
         phaseProgress: progress,
-        bytesLoaded: loaded,
-        bytesTotal: total || 0,
+        bytesLoaded: partTotal > 1 ? 0 : loaded,
+        bytesTotal: partTotal > 1 ? 0 : (total || 0),
         updatedAt: now
       });
     };
@@ -1450,7 +1951,7 @@ importScripts('lib/i18n.js');
     ].filter((url) => typeof url === "string" && url && !url.startsWith("blob:"));
     return [...new Set(urls)]
       .filter(isDownloadableTwitterVideoUrl)
-      .sort(rankVideoUrl);
+      .sort(rankVideoUrlType);
   }
   /** Check if a URL is a downloadable twitter video resource. */
   function isDownloadableTwitterVideoUrl(url) {
@@ -1465,19 +1966,32 @@ importScripts('lib/i18n.js');
   function isFragmentedMp4InitUrl(url) {
     return /\/(?:vid|aud)\/[^/]+\/0\/0\//.test(url);
   }
-  function rankVideoUrl(a, b) {
+  function rankVideoUrlType(a, b) {
     const aIsMp4 = a.includes(".mp4") ? 1 : 0;
     const bIsMp4 = b.includes(".mp4") ? 1 : 0;
-    if (aIsMp4 !== bIsMp4) {
-      return bIsMp4 - aIsMp4;
-    }
-    return getVideoUrlPixels(b) - getVideoUrlPixels(a);
+    return bIsMp4 - aIsMp4;
   }
-  function getVideoUrlPixels(url) {
-    const match = url.match(/\/(\d+)x(\d+)\//);
-    return match ? Number(match[1]) * Number(match[2]) : 0;
+  function assertTelegramUploadSize(size, mediaType) {
+    const limit = mediaType === "photo" ? TELEGRAM_PHOTO_UPLOAD_MAX_BYTES : TELEGRAM_FILE_UPLOAD_MAX_BYTES;
+    if (Number(size || 0) > limit) {
+      throw new Error(mediaType === "photo" ? __t("bg_photoTooLarge") : __t("bg_videoTooLarge"));
+    }
+  }
+  function getPhotoFilename(url, contentType = "") {
+    const extension = contentType.includes("png") ? "png" : (contentType.includes("webp") ? "webp" : "jpg");
+    try {
+      const pathname = new URL(url).pathname;
+      const name = pathname.split("/").filter(Boolean).pop() || "";
+      const base = name.replace(/\.[a-z0-9]+$/i, "").slice(0, 80) || "twitter-photo";
+      return `${base}.${extension}`;
+    } catch {
+      return `twitter-photo.${extension}`;
+    }
   }
   async function fetchVideoBlob(url, onProgress = null, signal = null) {
+    return fetchBlobWithProgress(url, onProgress, signal, "video/mp4");
+  }
+  async function fetchBlobWithProgress(url, onProgress = null, signal = null, fallbackType = "application/octet-stream") {
     const response = await fetch(url, {
       credentials: "include",
       signal
@@ -1506,10 +2020,10 @@ importScripts('lib/i18n.js');
       await onProgress({ loaded, total });
     }
     await onProgress({ loaded, total: total || loaded });
-    return new Blob(chunks, { type: response.headers.get("Content-Type") || "video/mp4" });
+    return new Blob(chunks, { type: response.headers.get("Content-Type") || fallbackType });
   }
   /** Download an HLS video stream by concatenating all segments. */
-  async function downloadM3u8Video(url, signal = null) {
+  async function downloadM3u8Video(url, queueItemId = "", progressScope = {}, signal = null) {
     throwIfAborted(signal);
     const playlist = await fetchText(url, signal);
     const audioPlaylistUrl = resolveBestAudioPlaylistUrl(url, playlist);
@@ -1523,9 +2037,14 @@ importScripts('lib/i18n.js');
       throw new Error(__t("bg_noHlsSegments"));
     }
     const blobs = [];
-    for (const partUrl of parts) {
+    for (let index = 0; index < parts.length; index += 1) {
       throwIfAborted(signal);
-      blobs.push(await fetchVideoBlob(partUrl, null, signal));
+      const progress = createDownloadProgressReporter(queueItemId, {
+        ...progressScope,
+        partIndex: index,
+        partTotal: parts.length
+      });
+      blobs.push(await fetchVideoBlob(parts[index], progress, signal));
     }
     const isFragmentedMp4 = parts.some((partUrl) => /\.(m4s|cmfv|mp4)(\?|$)/.test(partUrl));
     return {
@@ -1691,6 +2210,17 @@ importScripts('lib/i18n.js');
       caption,
       parse_mode: "HTML"
     }, signal);
+  }
+  async function sendTelegramPhotoFile(botToken, chatId, photoFile, caption, queueItemId = "", signal = null) {
+    const form = new FormData();
+    form.set("chat_id", chatId);
+    form.set("photo", photoFile.blob, photoFile.filename);
+    if (caption) {
+      form.set("caption", caption);
+      form.set("parse_mode", "HTML");
+    }
+    await appendQueueDebugLog(queueItemId, `Uploading Telegram photo: ${photoFile.filename || "twitter-photo.jpg"}`);
+    return callTelegramMultipartLogged(botToken, "sendPhoto", form, queueItemId, signal);
   }
   /** Send a video via Telegram API (URL reference). */
   async function sendTelegramVideo(botToken, chatId, video, caption, signal = null) {

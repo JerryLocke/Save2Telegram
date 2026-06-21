@@ -29,6 +29,7 @@
   const importSettingsFileInput = document.getElementById("import-settings-file");
 
   const QUEUE_KEY = "forwardQueue";
+  const DRAFT_KEY = "forwardDraft";
   const GENERAL_SETTINGS_KEY = "generalSettings";
   const QUEUE_ITEMS_PER_PAGE = 5;
   const DEFAULT_GENERAL_SETTINGS = {
@@ -42,6 +43,7 @@
 
   let configs = [];
   let currentQueue = [];
+  let currentDraft = null;
   let activeQueueFilter = "all";
   let queueCurrentPage = 0;
   let lastQueueSignature = "";
@@ -251,8 +253,42 @@
       return;
     }
 
-    const id = button.dataset.id;
     const action = button.dataset.action;
+    if (action === "send-draft") {
+      button.disabled = true;
+      try {
+        const response = await chrome.runtime.sendMessage({ type: "SEND_FORWARD_DRAFT" });
+        if (!response?.ok) {
+          throw new Error(response?.error || Save2TG.I18n.t("popup_queueOpFailed"));
+        }
+
+        currentDraft = null;
+        lastQueueSignature = "";
+        await loadQueue();
+      } catch (error) {
+        renderError(error.message || String(error));
+      }
+      return;
+    }
+
+    if (action === "clear-draft") {
+      button.disabled = true;
+      try {
+        const response = await chrome.runtime.sendMessage({ type: "CLEAR_FORWARD_DRAFT" });
+        if (!response?.ok) {
+          throw new Error(response?.error || Save2TG.I18n.t("popup_queueOpFailed"));
+        }
+
+        currentDraft = null;
+        lastQueueSignature = "";
+        renderQueue();
+      } catch (error) {
+        renderError(error.message || String(error));
+      }
+      return;
+    }
+
+    const id = button.dataset.id;
     const type = action === "retry"
       ? "RETRY_FORWARD_QUEUE_ITEM"
       : (action === "cancel" ? "CANCEL_FORWARD_QUEUE_ITEM" : "REMOVE_FORWARD_QUEUE_ITEM");
@@ -307,17 +343,32 @@
   Save2TG.I18n.init().then(() => {
     Save2TG.I18n.applyDom();
     setupLanguageSwitcher();
+    loadDraft();
     loadQueue();
     loadGeneralSettings();
     loadConfigs();
     setupQueueListWheel();
   }).catch(() => {
+    loadDraft();
     loadQueue();
     loadGeneralSettings();
     loadConfigs();
     setupQueueListWheel();
   });
-  setInterval(loadQueue, 2500);
+  setInterval(() => {
+    loadDraft();
+    loadQueue();
+  }, 2500);
+
+  chrome.storage?.onChanged?.addListener((changes, areaName) => {
+    if (areaName !== "local" || !Object.prototype.hasOwnProperty.call(changes, DRAFT_KEY)) {
+      return;
+    }
+
+    currentDraft = normalizeDraftForPopup(changes[DRAFT_KEY].newValue);
+    lastQueueSignature = "";
+    renderQueue();
+  });
 
   /** Initialize the language selector dropdown with the stored preference. */
   async function setupLanguageSwitcher() {
@@ -753,9 +804,25 @@
     }
   }
 
+  async function loadDraft() {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "GET_FORWARD_DRAFT" });
+      if (!response?.ok) {
+        throw new Error(response?.error || Save2TG.I18n.t("popup_readQueueFailed"));
+      }
+
+      currentDraft = normalizeDraftForPopup(response.result);
+      lastQueueSignature = "";
+      renderQueue();
+    } catch (_) {
+      currentDraft = null;
+    }
+  }
+
   /** Render the forward queue from current visible items. */
   function renderQueue() {
     const visibleQueue = getFilteredQueue(currentQueue);
+    const visibleDraft = activeQueueFilter === "all" ? currentDraft : null;
     const sortedQueue = visibleQueue
       .slice()
       .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
@@ -772,6 +839,7 @@
     const signature = JSON.stringify({
       filter: activeQueueFilter,
       page: queueCurrentPage,
+      draft: getDraftRenderSignature(visibleDraft),
       queue: sortedQueue.map(getQueueRenderSignature)
     });
 
@@ -781,7 +849,7 @@
 
     lastQueueSignature = signature;
 
-    if (!sortedQueue.length) {
+    if (!sortedQueue.length && !visibleDraft) {
       queueList.replaceChildren();
       renderQueuePagination(0, 0);
       const empty = document.createElement("p");
@@ -792,6 +860,23 @@
     }
 
     queueList.replaceChildren();
+
+    if (visibleDraft) {
+      const draftPage = document.createElement("div");
+      draftPage.className = sortedQueue.length ? "queue-draft-page has-queue" : "queue-draft-page";
+      draftPage.append(createDraftItem(visibleDraft));
+      if (sortedQueue.length) {
+        const separator = document.createElement("div");
+        separator.className = "queue-draft-separator";
+        draftPage.append(separator);
+      }
+      queueList.append(draftPage);
+    }
+
+    if (!sortedQueue.length) {
+      renderQueuePagination(0, 0);
+      return;
+    }
 
     const track = document.createElement("div");
     track.className = "queue-track dragging";
@@ -981,6 +1066,91 @@
     return labels[activeQueueFilter] || labels.all;
   }
 
+  function createDraftItem(draft) {
+    const article = document.createElement("article");
+    article.className = "queue-item draft-item";
+
+    const icon = createDraftIcon(draft);
+    const main = document.createElement("div");
+    main.className = "queue-main";
+
+    const title = document.createElement("a");
+    title.className = "queue-title";
+    title.href = draft.firstTweet?.tweetUrl || "#";
+    title.target = "_blank";
+    title.rel = "noreferrer";
+    title.textContent = getDraftTitle(draft);
+
+    const subLine1 = document.createElement("span");
+    subLine1.className = "queue-sub-line";
+    subLine1.textContent = [
+      draft.telegramConfigLabel || "",
+      formatTime(draft.updatedAt)
+    ].filter(Boolean).join(" · ");
+
+    const subLine2 = document.createElement("span");
+    subLine2.className = "queue-sub-line";
+    subLine2.textContent = getDraftMediaSummary(draft);
+    main.append(title, subLine1, subLine2);
+
+    const sendBtn = document.createElement("button");
+    sendBtn.type = "button";
+    sendBtn.className = "queue-action-button queue-draft-send";
+    sendBtn.dataset.action = "send-draft";
+    sendBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 2.5 7 9"/><path d="m13.5 2.5-3.6 11-3-4.6-4.4-2.8 11-3.6Z"/></svg>';
+    sendBtn.title = Save2TG.I18n.t("popup_sendDraft");
+    sendBtn.setAttribute("aria-label", Save2TG.I18n.t("popup_sendDraft"));
+
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.className = "queue-action-button queue-item-delete draft-clear";
+    clearBtn.dataset.action = "clear-draft";
+    clearBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5 11.5 11.5"/><path d="M11.5 4.5 4.5 11.5"/></svg>';
+    clearBtn.title = Save2TG.I18n.t("popup_clearDraft");
+    clearBtn.setAttribute("aria-label", Save2TG.I18n.t("popup_clearDraft"));
+
+    const status = createQueueStatusElement({
+      mode: "text",
+      label: Save2TG.I18n.t("popup_draft"),
+      actions: [sendBtn, clearBtn]
+    });
+    article.append(icon, main, status);
+    return article;
+  }
+
+  function createDraftIcon(draft) {
+    const tweetUrl = draft.firstTweet?.tweetUrl || "";
+    const icon = tweetUrl ? document.createElement("a") : document.createElement("div");
+    icon.className = "queue-icon draft-icon";
+    if (tweetUrl) {
+      icon.href = tweetUrl;
+      icon.target = "_blank";
+      icon.rel = "noreferrer";
+      icon.title = Save2TG.I18n.t("popup_openOriginal");
+      icon.setAttribute("aria-label", Save2TG.I18n.t("popup_openOriginal"));
+    }
+
+    const thumbnails = getDraftThumbnails(draft);
+    if (!thumbnails.length) {
+      icon.textContent = "IMG";
+      return icon;
+    }
+
+    const stack = document.createElement("span");
+    stack.className = "draft-thumb-stack";
+    ["back-left", "back-right", "front"].forEach((position, index) => {
+      const thumb = document.createElement("span");
+      thumb.className = `draft-thumb ${position}`;
+      const image = document.createElement("img");
+      image.src = thumbnails[index] || thumbnails[0];
+      image.alt = "";
+      thumb.append(image);
+      stack.append(thumb);
+    });
+    icon.append(stack);
+    return icon;
+  }
+
   /** Create a DOM element for a single queue item card. */
   function createQueueItem(item) {
     const article = document.createElement("article");
@@ -1012,35 +1182,12 @@
     renderQueueSubLine2(subLine2, item);
     main.append(title, subLine1, subLine2);
 
-    const status = document.createElement("div");
-    status.className = "queue-status";
-
-    const phase = document.createElement("span");
-    phase.className = "queue-phase";
-    phase.textContent = getPhaseLabel(item);
-
-    const infoBottom = document.createElement("div");
-    infoBottom.className = "queue-info-bottom";
-
-    const percent = item.status === "error" ? document.createElement("button") : document.createElement("span");
-    percent.className = item.status === "error" ? "queue-percent retry-inline" : "queue-percent";
-
-    if (item.status === "error") {
-      percent.type = "button";
-      percent.innerHTML = '<svg viewBox="0 0 1024 1024"><path d="M512 128a382.293333 382.293333 0 0 0-291.584 135.082667L128 170.666667v256h256L281.258667 323.925333C336 256.725333 418.773333 213.333333 512 213.333333c164.650667 0 298.666667 133.973333 298.666667 298.666667h85.333333c0-211.712-172.245333-384-384-384z m-384 384c0 211.754667 172.245333 384 384 384a382.293333 382.293333 0 0 0 291.584-135.082667L896 853.333333v-256h-256l102.741333 102.741334C688 767.274667 605.226667 810.666667 512 810.666667c-164.650667 0-298.666667-134.016-298.666667-298.666667H128z" fill="#3F3F3F" p-id="7271"></path></svg>';
-      percent.dataset.action = "retry";
-      percent.dataset.id = item.id;
-      percent.title = Save2TG.I18n.t("popup_retry");
-      percent.setAttribute("aria-label", Save2TG.I18n.t("popup_retry"));
-    } else {
-      percent.textContent = `${getProgress(item)}%`;
-      percent.classList.toggle("hidden", !shouldShowQueuePercent(item));
-    }
-
-    const deleteBtn = createQueueRemoveButton(item);
-
-    infoBottom.append(percent, deleteBtn);
-    status.append(phase, infoBottom);
+    const status = createQueueStatusElement({
+      mode: getQueueStatusMode(item),
+      label: getPhaseLabel(item),
+      percent: `${getProgress(item)}%`,
+      actions: getQueueStatusActions(item)
+    });
 
     article.append(icon, main, status);
     return article;
@@ -1051,15 +1198,19 @@
     article.className = `queue-item status-${item.status || "pending"} phase-${item.phase || "pending"}`;
     article.style.setProperty("--progress", `${getProgress(item)}%`);
 
+    const status = article.querySelector(".queue-status");
+    if (status) {
+      status.className = getQueueStatusClassName(getQueueStatusMode(item), getQueueStatusActionCount(item));
+    }
+
     const phase = article.querySelector(".queue-phase");
     if (phase) {
       phase.textContent = getPhaseLabel(item);
     }
 
-    const percent = article.querySelector(".queue-percent:not(.retry-inline)");
+    const percent = article.querySelector(".queue-percent");
     if (percent) {
       percent.textContent = `${getProgress(item)}%`;
-      percent.classList.toggle("hidden", !shouldShowQueuePercent(item));
     }
 
     const removeBtn = article.querySelector(".queue-item-delete");
@@ -1073,11 +1224,75 @@
     }
   }
 
+  function createQueueStatusElement({ mode, label = "", percent = "", actions = [] }) {
+    const status = document.createElement("div");
+    status.className = getQueueStatusClassName(mode, actions.length);
+
+    const phase = document.createElement("span");
+    phase.className = "queue-phase";
+    phase.textContent = label;
+
+    const infoBottom = document.createElement("div");
+    infoBottom.className = "queue-info-bottom";
+
+    const percentEl = document.createElement("span");
+    percentEl.className = "queue-percent";
+    percentEl.textContent = percent;
+
+    infoBottom.append(percentEl, ...actions);
+    status.append(phase, infoBottom);
+    return status;
+  }
+
+  function getQueueStatusClassName(mode, actionCount = 0) {
+    return [
+      "queue-status",
+      `queue-status--${mode}`,
+      actionCount > 0 ? "queue-status--has-actions" : "",
+      actionCount > 0 ? `queue-status--actions-${actionCount}` : ""
+    ].filter(Boolean).join(" ");
+  }
+
+  // Right-side queue status is limited to four modes: text, progress, actions, empty.
+  function getQueueStatusMode(item) {
+    if (item.status === "error") {
+      return "actions";
+    }
+
+    if (item.status === "sent") {
+      return "empty";
+    }
+
+    return shouldShowQueuePercent(item) ? "progress" : "text";
+  }
+
+  function getQueueStatusActionCount(item) {
+    return item.status === "error" ? 2 : 1;
+  }
+
+  function getQueueStatusActions(item) {
+    return item.status === "error"
+      ? [createQueueRetryButton(item), createQueueRemoveButton(item)]
+      : [createQueueRemoveButton(item)];
+  }
+
+  function createQueueRetryButton(item) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "queue-action-button retry-inline";
+    button.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 7a5 5 0 1 0-1.5 3.6"/><path d="M13 3.5V7h-3.5"/></svg>';
+    button.dataset.action = "retry";
+    button.dataset.id = item.id;
+    button.title = Save2TG.I18n.t("popup_retry");
+    button.setAttribute("aria-label", Save2TG.I18n.t("popup_retry"));
+    return button;
+  }
+
   /** Create a remove/delete button for a queue item. */
   function createQueueRemoveButton(item) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "queue-item-delete";
+    button.className = "queue-action-button queue-item-delete";
     button.dataset.action = "remove";
     button.dataset.id = item.id;
     updateQueueRemoveButton(button, item);
@@ -1087,7 +1302,7 @@
   function updateQueueRemoveButton(button, item) {
     const isSent = item.status === "sent";
     button.dataset.action = isSent ? "remove" : "cancel";
-    button.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>';
+    button.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5 11.5 11.5"/><path d="M11.5 4.5 4.5 11.5"/></svg>';
     button.title = isSent ? Save2TG.I18n.t("popup_delete") : Save2TG.I18n.t("popup_cancel");
     button.setAttribute("aria-label", isSent ? Save2TG.I18n.t("popup_delete") : Save2TG.I18n.t("popup_cancel"));
   }
@@ -1232,6 +1447,85 @@
     return Math.max(0, Math.min(maxWidth, width));
   }
 
+  function normalizeDraftForPopup(draft) {
+    if (!draft || typeof draft !== "object") {
+      return null;
+    }
+
+    const items = Array.isArray(draft.items) ? draft.items.filter((item) => item?.media) : [];
+    if (!items.length) {
+      return null;
+    }
+
+    const mediaItems = Array.isArray(draft.mediaItems)
+      ? draft.mediaItems
+      : items.map((item) => item.media).filter(Boolean);
+    return {
+      ...draft,
+      items,
+      mediaItems,
+      count: Number(draft.count || mediaItems.length)
+    };
+  }
+
+  function getDraftRenderSignature(draft) {
+    if (!draft) {
+      return null;
+    }
+
+    return {
+      id: draft.id || "",
+      updatedAt: draft.updatedAt || 0,
+      title: getDraftTitle(draft),
+      config: draft.telegramConfigLabel || "",
+      media: getDraftMediaSummary(draft),
+      thumbnails: getDraftThumbnails(draft)
+    };
+  }
+
+  function getDraftTitle(draft) {
+    return draft?.firstTweet?.text ||
+      draft?.firstTweet?.tweetUrl ||
+      draft?.items?.[0]?.tweet?.text ||
+      draft?.items?.[0]?.tweet?.tweetUrl ||
+      Save2TG.I18n.t("popup_draftBox");
+  }
+
+  function getDraftMediaItems(draft) {
+    const mediaItems = Array.isArray(draft?.mediaItems) ? draft.mediaItems : [];
+    if (mediaItems.length) {
+      return mediaItems;
+    }
+
+    return (Array.isArray(draft?.items) ? draft.items : [])
+      .map((item) => item.media)
+      .filter(Boolean);
+  }
+
+  function getDraftMediaSummary(draft) {
+    const mediaItems = getDraftMediaItems(draft);
+    const photoCount = mediaItems.filter((media) => media.type === "photo").length;
+    const videoCount = mediaItems.filter((media) => media.type === "video").length;
+    const parts = [];
+
+    if (videoCount) {
+      parts.push(Save2TG.I18n.t("popup_mediaVideos", [videoCount]));
+    }
+
+    if (photoCount) {
+      parts.push(Save2TG.I18n.t("popup_mediaPhotos", [photoCount]));
+    }
+
+    return parts.join(" ") || Save2TG.I18n.t("popup_mediaLink");
+  }
+
+  function getDraftThumbnails(draft) {
+    return getDraftMediaItems(draft)
+      .map((media) => media.thumbnail || (media.type === "photo" ? media.url : ""))
+      .filter(Boolean)
+      .slice(0, 3);
+  }
+
   function getQueueRenderSignature(item) {
     return {
       id: item.id,
@@ -1328,7 +1622,16 @@
 
   function getMediaItems(item) {
     const mediaItems = Array.isArray(item.payload?.mediaItems) ? item.payload.mediaItems : [];
-    return mediaItems.length ? mediaItems : (item.payload?.media ? [item.payload.media] : []);
+    if (mediaItems.length) {
+      return mediaItems;
+    }
+
+    const originalItems = Array.isArray(item.payload?.originalMediaItems) ? item.payload.originalMediaItems : [];
+    if (item.status === "sent" && originalItems.length) {
+      return originalItems;
+    }
+
+    return item.payload?.media ? [item.payload.media] : [];
   }
 
   /** Get a short summary of media items in the payload. */

@@ -229,6 +229,7 @@ export function serializeJob(job) {
     error: job.error,
     errorCode: job.errorCode || "",
     retryAfter: Number(job.retryAfter || 0),
+    sentDraftMediaKeys: Array.isArray(job.sentDraftMediaKeys) ? job.sentDraftMediaKeys : [],
     cancelled: Boolean(job.cancelled),
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,

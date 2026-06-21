@@ -29,11 +29,24 @@ export async function sendTelegramPhoto(botToken, chatId, photo, caption, signal
   return callTelegram(botToken, "sendPhoto", { chat_id: chatId, photo, caption, parse_mode: "HTML" }, signal);
 }
 
-/** Upload and send a video file (Blob) to a Telegram chat. */
-export async function sendTelegramVideoFile(botToken, chatId, videoFile, caption, options = {}) {
-  const form = new FormData();
+/** Upload and send a photo file to a Telegram chat. */
+export async function sendTelegramPhotoFile(botToken, chatId, photoFile, caption, options = {}) {
+  const form = createMultipartForm();
   form.set("chat_id", chatId);
-  form.set("video", videoFile.blob, videoFile.filename);
+  form.set("photo", photoFile, photoFile.filename);
+  if (caption) {
+    form.set("caption", caption);
+    form.set("parse_mode", "HTML");
+  }
+
+  return callTelegramMultipart(botToken, "sendPhoto", form, options);
+}
+
+/** Upload and send a video file to a Telegram chat. */
+export async function sendTelegramVideoFile(botToken, chatId, videoFile, caption, options = {}) {
+  const form = createMultipartForm();
+  form.set("chat_id", chatId);
+  form.set("video", videoFile, videoFile.filename);
   form.set("supports_streaming", "true");
   if (caption) {
     form.set("caption", caption);
@@ -41,6 +54,11 @@ export async function sendTelegramVideoFile(botToken, chatId, videoFile, caption
   }
 
   return callTelegramMultipart(botToken, "sendVideo", form, options);
+}
+
+/** Create a small FormData-compatible object that preserves retryable disk file streams. */
+export function createMultipartForm() {
+  return new MultipartForm();
 }
 
 /** Send a text message to a Telegram chat with HTML parsing. */
@@ -293,6 +311,7 @@ function describeUploadError(error) {
 function createMultipartBody(form, onProgress = null) {
   const boundary = `----Save2Telegram${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
   const encoder = new TextEncoder();
+  // Build metadata up front so Content-Length is known before streaming starts.
   const parts = [...form.entries()].map(([name, value]) => createMultipartPart(boundary, name, value, encoder));
   const closing = encoder.encode(`--${boundary}--\r\n`);
   const contentLength = parts.reduce((total, part) => total + part.size, 0) + closing.byteLength;
@@ -309,8 +328,8 @@ function createMultipartBody(form, onProgress = null) {
         controller.enqueue(part.header);
         report(part.header.byteLength);
 
-        if (part.blob) {
-          for await (const chunk of part.blob.stream()) {
+        if (part.file) {
+          for await (const chunk of part.file.stream()) {
             controller.enqueue(chunk);
             report(chunk.byteLength);
           }
@@ -345,15 +364,69 @@ function createMultipartPart(boundary, name, value, encoder) {
     return { header, content, footer, size: header.byteLength + content.byteLength + footer.byteLength };
   }
 
-  const filename = value?.name || "blob";
-  const contentType = value?.type || "application/octet-stream";
+  const filename = value?.filename || value?.name || "blob";
+  const contentType = value?.type || value?.contentType || "application/octet-stream";
   const header = encoder.encode(
     `--${boundary}\r\n` +
     `Content-Disposition: form-data; name="${escapeMultipartName(name)}"; filename="${escapeMultipartName(filename)}"\r\n` +
     `Content-Type: ${contentType}\r\n\r\n`
   );
   const footer = encoder.encode("\r\n");
-  return { header, blob: value, footer, size: header.byteLength + Number(value?.size || 0) + footer.byteLength };
+  return { header, file: value, footer, size: header.byteLength + Number(value?.size || 0) + footer.byteLength };
+}
+
+class MultipartForm {
+  constructor() {
+    this.fields = [];
+  }
+
+  set(name, value, filename = "") {
+    const key = String(name);
+    const entry = [key, normalizeMultipartValue(value, filename)];
+    const existingIndex = this.fields.findIndex(([fieldName]) => fieldName === key);
+    if (existingIndex >= 0) {
+      this.fields[existingIndex] = entry;
+      return;
+    }
+
+    this.fields.push(entry);
+  }
+
+  get(name) {
+    const key = String(name);
+    return this.fields.find(([fieldName]) => fieldName === key)?.[1] ?? null;
+  }
+
+  entries() {
+    return this.fields[Symbol.iterator]();
+  }
+
+  [Symbol.iterator]() {
+    return this.entries();
+  }
+}
+
+function normalizeMultipartValue(value, filename = "") {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (value?.blob) {
+    // Accept older { blob, filename } call sites while the backend migrates to disk-backed files.
+    return normalizeMultipartValue(value.blob, filename || value.filename || value.name);
+  }
+
+  const name = filename || value?.filename || value?.name || "blob";
+  return {
+    source: value,
+    filename: name,
+    name,
+    type: value?.type || value?.contentType || "application/octet-stream",
+    size: Number(value?.size || 0),
+    stream() {
+      return value.stream();
+    }
+  };
 }
 
 /** Escape special characters in a multipart field name per RFC 2047. */

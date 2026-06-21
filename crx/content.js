@@ -5,14 +5,22 @@
   const WRAPPER_CLASS = "tf-forward-action";
   const MENU_CLASS = "tf-forward-config-menu";
   const TOAST_ID = "tf-forward-toast";
-  const VIDEO_CANDIDATE_WAIT_MS = 3500;
-  const VIDEO_CANDIDATE_POLL_MS = 150;
+  const FORWARD_DRAFT_KEY = "forwardDraft";
+  const GRAPHQL_MEDIA_QUERY_TIMEOUT_MS = 3000;
+  const GRAPHQL_MEDIA_CACHE_MESSAGE_SOURCE = "Save2Telegram";
+  const GRAPHQL_MEDIA_CACHE_MESSAGE_TYPE = "GRAPHQL_MEDIA_CACHE";
+  const MAX_GRAPHQL_MEDIA_CACHE_ENTRIES = 800;
   const LABEL_READY = function () { return chrome.i18n.getMessage("content_labelReady"); };
   const LABEL_SENDING = function () { return chrome.i18n.getMessage("content_labelSending"); };
   const LABEL_SENT = function () { return chrome.i18n.getMessage("content_labelSent"); };
   const LABEL_RECENT = function () { return chrome.i18n.getMessage("content_labelRecent"); };
   const MESSAGE_SENT = function () { return chrome.i18n.getMessage("content_messageSent"); };
   const MESSAGE_FAILED = function () { return chrome.i18n.getMessage("content_messageFailed"); };
+  const MESSAGE_DRAFT_ADDED = function (count) { return chrome.i18n.getMessage("content_draftAdded", [count]); };
+  const MESSAGE_DRAFT_REMOVED = function (count) { return chrome.i18n.getMessage("content_draftRemoved", [count]); };
+  const MESSAGE_DRAFT_QUEUED = function () { return chrome.i18n.getMessage("content_draftQueued"); };
+  const MESSAGE_NO_MEDIA = function () { return chrome.i18n.getMessage("content_noMedia"); };
+  const MESSAGE_NO_DOWNLOADABLE_VIDEO = function () { return chrome.i18n.getMessage("content_noDownloadableVideo"); };
   const ICON_READY = `
   <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
     <path d="M21.7 3.3a1.1 1.1 0 0 0-1.2-.2L3 10.1a1.1 1.1 0 0 0 .1 2.1l4.8 1.5 1.8 5.7a1.1 1.1 0 0 0 2 .2l2.7-4.1 4.9 3.6a1.1 1.1 0 0 0 1.7-.7l1.1-14a1.1 1.1 0 0 0-.4-1.1Zm-4.2 4.4-8.2 7.1-.7-2.3 8.9-4.8Z"/>
@@ -28,7 +36,8 @@
   let lastResourceRenderAt = 0;
   let configCache = null;
   let configCacheAt = 0;
-  const videoWarmups = new WeakMap();
+  let draftCache = null;
+  const graphqlMediaCache = new Map();
 
   init();
 
@@ -36,12 +45,39 @@
   // ==================== Initialization ====================
   /** Initialize content script: mount forward buttons on tweets and media viewer. */
   function init() {
+    window.addEventListener("message", handleGraphqlMediaCacheMessage);
+    installGraphqlResponseCapture();
+    setupDraftSync();
     queueRenderBurst();
     patchHistoryNavigation();
     observeTweetResources();
     document.addEventListener("click", handlePotentialMediaClick, true);
     window.addEventListener("popstate", handleUrlMaybeChanged);
     window.addEventListener("pageshow", queueRenderBurst);
+  }
+
+  function installGraphqlResponseCapture() {
+    const inject = () => {
+      if (document.documentElement?.dataset.tfGraphqlCaptureInjected === "true") {
+        return;
+      }
+
+      const parent = document.documentElement || document.head || document.body;
+      if (!parent) {
+        document.addEventListener("DOMContentLoaded", inject, { once: true });
+        return;
+      }
+
+      const marker = document.documentElement || parent;
+      marker.dataset.tfGraphqlCaptureInjected = "true";
+      const script = document.createElement("script");
+      script.async = false;
+      script.src = chrome.runtime.getURL("page-graphql-capture.js");
+      script.onload = () => script.remove();
+      parent.append(script);
+    };
+
+    inject();
   }
 
   /** Monkey-patch history.pushState/replaceState to detect SPA navigation. */
@@ -115,12 +151,7 @@
 
   /** Check if a URL is a tweet-related resource that warrants a re-render. */
   function isTweetResource(url) {
-    return url.includes("/graphql/") &&
-      (url.includes("TweetDetail") ||
-        url.includes("TweetResultByRestId") ||
-        url.includes("UserTweets") ||
-        url.includes("HomeTimeline") ||
-        url.includes("Bookmarks"));
+    return isTweetGraphqlUrl(url);
   }
 
   function queueRender() {
@@ -152,13 +183,9 @@
   function renderButtons() {
     const existingWrappers = Array.from(document.querySelectorAll(`.${WRAPPER_CLASS},#${WRAPPER_ID}`));
 
-    if (!isTwitterMediaPage()) {
-      existingWrappers.forEach((wrapper) => wrapper.remove());
-      return true;
-    }
-
     const mounts = findButtonMounts();
     if (!mounts.length) {
+      existingWrappers.forEach((wrapper) => wrapper.remove());
       return false;
     }
 
@@ -185,7 +212,6 @@
       if (existingButton) {
         syncButtonSurface(existingButton, mount);
         bindButtonInteractions(existingWrapper, existingButton);
-        warmForwardVideoSoon(existingButton);
       }
 
       if (!isMountedAtTarget(existingWrapper, mount)) {
@@ -206,7 +232,6 @@
     bindButtonInteractions(wrapper, button);
     wrapper.append(button);
     insertAfter(mount.parent, wrapper, mount.after);
-    warmForwardVideoSoon(button);
   }
 
   /** Wire click handlers and contextual menu to a forward button. */
@@ -218,12 +243,15 @@
     wrapper.dataset.tfConfigMenuBound = "true";
     button.addEventListener("click", (event) => handleForwardClick(event, wrapper, button));
     button.addEventListener("mouseenter", () => {
+      if (isBatchForwardMode()) {
+        hideConfigMenu(wrapper);
+        return;
+      }
+
       showConfigMenu(wrapper, button);
-      warmForwardVideo(button);
     });
     button.addEventListener("focus", () => {
       showConfigMenu(wrapper, button);
-      warmForwardVideo(button);
     });
     wrapper.addEventListener("mouseleave", () => scheduleHideConfigMenu(wrapper));
     wrapper.addEventListener("focusout", () => {
@@ -235,11 +263,6 @@
         // ==================== Forward Action ====================
       }, 0);
     });
-  }
-
-  function isTwitterMediaPage() {
-    const path = location.pathname;
-    return /\/status\/\d+/.test(path);
   }
 
   function needsMediaFooter() {
@@ -257,10 +280,29 @@
         return;
       }
 
-      await sendForward(button, getDefaultForwardConfig(configs).id);
+      await handleForwardAction(event, button, getDefaultForwardConfig(configs).id);
     } catch (error) {
       showToast(error.message || String(error), true);
     }
+  }
+
+  async function handleForwardAction(event, button, configId = "", options = {}) {
+    const hasDraft = getDraftMediaCount(draftCache) > 0;
+    if (event?.ctrlKey) {
+      if (hasDraft) {
+        await sendDraftForward(button, configId, options);
+      } else {
+        await toggleDraftMedia(button, configId, options);
+      }
+      return;
+    }
+
+    if (hasDraft) {
+      await toggleDraftMedia(button, configId, options);
+      return;
+    }
+
+    await sendForward(button, configId);
   }
 
   /** Send the tweet payload to the extension service worker for forwarding. */
@@ -269,7 +311,8 @@
 
     try {
       let payload = collectTweetPayload(button);
-      payload = await prepareVideoCandidatesForForward(button, payload);
+      payload = await hydrateTweetPayloadMediaFromGraphql(payload);
+      assertForwardableMediaPayload(payload);
       const response = await chrome.runtime.sendMessage({
         type: "FORWARD_TWITTER_MEDIA",
         payload,
@@ -290,187 +333,73 @@
     }
   }
 
-  async function prepareVideoCandidatesForForward(button, payload) {
-    if (!hasVideoWithoutDownloadableCandidate(payload)) {
-      return payload;
-    }
+  async function toggleDraftMedia(button, configId = "", options = {}) {
+    setButtonState(button, true, LABEL_SENDING());
 
-    const mediaRoot = findMediaRootForButton(button);
-    const videos = findVisibleVideos(mediaRoot);
-    if (!videos.length) {
-      return payload;
-    }
-
-    videos.forEach(warmVideoElement);
-    const foundCandidate = await waitForVideoCandidate(mediaRoot, videos, VIDEO_CANDIDATE_WAIT_MS);
-    return foundCandidate ? collectTweetPayload(button) : payload;
-  }
-
-  function warmForwardVideoSoon(button) {
-    if (button?.dataset.tfSurface !== "media") {
-      return;
-    }
-
-    window.setTimeout(() => warmForwardVideo(button), 0);
-  }
-
-  function warmForwardVideo(button) {
-    const mediaRoot = findMediaRootForButton(button);
-    findVisibleVideos(mediaRoot).forEach(warmVideoElement);
-  }
-
-  function warmVideoElement(video) {
-    if (!video) {
-      return Promise.resolve(false);
-    }
-
-    const existingWarmup = videoWarmups.get(video);
-    if (existingWarmup) {
-      return existingWarmup;
-    }
-
-    const warmup = Promise.resolve()
-      .then(() => {
-        if (collectVideoCandidates(video).length) {
-          return true;
-        }
-
-        try {
-          video.preload = "auto";
-        } catch {
-          // Ignore browser-managed media elements that do not allow mutation.
-        }
-
-        try {
-          if (video.networkState === video.NETWORK_EMPTY || (!video.currentSrc && !video.src)) {
-            video.load();
-          }
-        } catch {
-          // X may replace media elements while React is reconciling.
-        }
-
-        return true;
-      })
-      .catch(() => false);
-
-    videoWarmups.set(video, warmup);
-    return warmup;
-  }
-
-  async function waitForVideoCandidate(root, videos, timeoutMs) {
-    if (hasVideoCandidateInRoot(root, videos) || await hasCapturedVideoCandidate()) {
-      return true;
-    }
-
-    return new Promise((resolve) => {
-      let settled = false;
-      let observer = null;
-      let pollTimer = 0;
-      let timeoutTimer = 0;
-      const videoEvents = ["loadedmetadata", "loadeddata", "canplay", "playing", "progress", "durationchange"];
-
-      const cleanup = () => {
-        window.clearTimeout(pollTimer);
-        window.clearTimeout(timeoutTimer);
-        observer?.disconnect?.();
-        videos.forEach((video) => {
-          videoEvents.forEach((eventName) => video.removeEventListener(eventName, check));
-        });
-      };
-
-      const finish = (value) => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        cleanup();
-        resolve(value);
-      };
-
-      const check = () => {
-        if (hasVideoCandidateInRoot(root, videos)) {
-          finish(true);
-          return;
-        }
-
-        hasCapturedVideoCandidate()
-          .then((hasCandidate) => {
-            if (hasCandidate) {
-              finish(true);
-            }
-          })
-          .catch(() => {});
-      };
-
-      const poll = () => {
-        check();
-        if (!settled) {
-          pollTimer = window.setTimeout(poll, VIDEO_CANDIDATE_POLL_MS);
-        }
-      };
-
-      videos.forEach((video) => {
-        videoEvents.forEach((eventName) => video.addEventListener(eventName, check, { passive: true }));
+    try {
+      const { payload, sourceKey } = await collectDraftPayload(button);
+      const response = await chrome.runtime.sendMessage({
+        type: "TOGGLE_FORWARD_DRAFT_MEDIA",
+        payload,
+        configId,
+        sourceKey,
+        preferConfig: Boolean(options.preferConfig)
       });
 
-      if ("PerformanceObserver" in window) {
-        try {
-          observer = new PerformanceObserver((list) => {
-            if (list.getEntries().some((entry) => isDownloadableTwitterVideoResource(entry.name))) {
-              finish(true);
-            }
-          });
-          observer.observe({ type: "resource", buffered: true });
-        } catch {
-          observer = null;
-        }
+      if (!response?.ok) {
+        throw new Error(response?.error || MESSAGE_FAILED());
       }
 
-      timeoutTimer = window.setTimeout(() => finish(false), timeoutMs);
-      pollTimer = window.setTimeout(poll, VIDEO_CANDIDATE_POLL_MS);
-    });
-  }
-
-  function hasVideoCandidateInRoot(root, videos = findVisibleVideos(root)) {
-    return videos.some((video) => collectVideoCandidates(video).length) ||
-      collectVideoCandidates(null).length > 0;
-  }
-
-  async function hasCapturedVideoCandidate() {
-    try {
-      const response = await chrome.runtime.sendMessage({ type: "GET_CAPTURED_VIDEO_CANDIDATES" });
-      const candidates = Array.isArray(response?.result) ? response.result : [];
-      return candidates
-        .map((url) => typeof url === "string" ? cleanEscapedUrl(url) : "")
-        .some((url) => url && !url.startsWith("blob:") && isDownloadableTwitterVideoResource(url));
-    } catch {
-      return false;
+      draftCache = response.result?.draft || null;
+      syncAllButtonDraftState();
+      const count = getDraftMediaCount(draftCache);
+      showToast(response.result?.action === "removed" ? MESSAGE_DRAFT_REMOVED(count) : MESSAGE_DRAFT_ADDED(count));
+      setButtonState(button, false, LABEL_READY());
+    } catch (error) {
+      showToast(error.message || String(error), true);
+      setButtonState(button, false, LABEL_READY());
     }
   }
 
-  function hasVideoWithoutDownloadableCandidate(payload) {
-    return getPayloadVideoItems(payload)
-      .some((media) => !hasDownloadableVideoCandidate(media));
+  async function sendDraftForward(button, configId = "", options = {}) {
+    setButtonState(button, true, LABEL_SENDING());
+
+    try {
+      const { payload, sourceKey } = await collectDraftPayload(button);
+      const response = await chrome.runtime.sendMessage({
+        type: "SEND_FORWARD_DRAFT",
+        payload,
+        configId,
+        sourceKey,
+        preferConfig: Boolean(options.preferConfig)
+      });
+
+      if (!response?.ok) {
+        throw new Error(response?.error || MESSAGE_FAILED());
+      }
+
+      markConfigRecentlyUsed(configId);
+      draftCache = response.result?.draft || null;
+      syncAllButtonDraftState();
+      showToast(MESSAGE_DRAFT_QUEUED());
+      setButtonState(button, false, LABEL_SENT());
+      setTimeout(() => setButtonState(button, false, LABEL_READY()), 1200);
+    } catch (error) {
+      showToast(error.message || String(error), true);
+      setButtonState(button, false, LABEL_READY());
+    }
   }
 
-  function getPayloadVideoItems(payload) {
-    const mediaItems = Array.isArray(payload?.mediaItems) && payload.mediaItems.length
-      ? payload.mediaItems
-      : (payload?.media ? [payload.media] : []);
-
-    return mediaItems.filter((media) => media?.type === "video");
-  }
-
-  function hasDownloadableVideoCandidate(media) {
-    const candidates = [
-      media?.url,
-      ...(Array.isArray(media?.candidates) ? media.candidates : [])
-    ];
-
-    return candidates
-      .map((url) => typeof url === "string" ? cleanEscapedUrl(url) : "")
-      .some((url) => url && !url.startsWith("blob:") && isDownloadableTwitterVideoResource(url));
+  async function collectDraftPayload(button) {
+    let payload = collectTweetPayload(button);
+    payload = await hydrateTweetPayloadMediaFromGraphql(payload);
+    const sourceKey = getDraftSourceKeyForButton(button, payload);
+    const draftPayload = selectDraftPayloadMedia(payload, sourceKey);
+    assertForwardableMediaPayload(draftPayload);
+    return {
+      payload: draftPayload,
+      sourceKey
+    };
   }
 
   /** Show a dropdown menu of Telegram configurations for the user to pick. */
@@ -548,7 +477,7 @@
       event.preventDefault();
       event.stopPropagation();
       hideConfigMenu(wrapper);
-      await sendForward(button, config.id);
+      await handleForwardAction(event, button, config.id, { preferConfig: true });
     });
 
     return item;
@@ -639,6 +568,177 @@
     configCacheAt = now;
   }
 
+  function setupDraftSync() {
+    loadForwardDraft()
+      .then((draft) => {
+        draftCache = normalizeDraftCache(draft);
+        syncAllButtonDraftState();
+      })
+      .catch(() => { });
+
+    chrome.storage?.onChanged?.addListener((changes, areaName) => {
+      if (areaName !== "local" || !Object.prototype.hasOwnProperty.call(changes, FORWARD_DRAFT_KEY)) {
+        return;
+      }
+
+      draftCache = normalizeDraftCache(changes[FORWARD_DRAFT_KEY].newValue);
+      syncAllButtonDraftState();
+    });
+  }
+
+  async function loadForwardDraft() {
+    const response = await chrome.runtime.sendMessage({ type: "GET_FORWARD_DRAFT" });
+    return response?.ok ? response.result : null;
+  }
+
+  function normalizeDraftCache(draft) {
+    if (!draft || typeof draft !== "object") {
+      return null;
+    }
+
+    const items = Array.isArray(draft.items) ? draft.items.filter((item) => item?.sourceKey) : [];
+    return items.length ? { ...draft, items } : null;
+  }
+
+  function getDraftMediaCount(draft) {
+    return Number(draft?.count || draft?.items?.length || 0);
+  }
+
+  function isBatchForwardMode() {
+    return getDraftMediaCount(draftCache) > 0;
+  }
+
+  function syncAllButtonDraftState() {
+    if (isBatchForwardMode()) {
+      hideConfigMenu();
+    }
+
+    document.querySelectorAll(`.${BUTTON_CLASS},#${BUTTON_ID}`).forEach(syncButtonDraftState);
+  }
+
+  function syncButtonDraftState(button) {
+    if (!button) {
+      return;
+    }
+
+    const count = getDraftMediaCount(draftCache);
+    if (count > 0) {
+      button.dataset.tfDraftCount = String(count);
+    } else {
+      delete button.dataset.tfDraftCount;
+    }
+
+    button.classList.toggle("tf-forward-in-draft", count > 0 && draftHasSourceKey(getDraftSourceKeyForButton(button)));
+  }
+
+  function draftHasSourceKey(sourceKey) {
+    if (!sourceKey || !Array.isArray(draftCache?.items)) {
+      return false;
+    }
+
+    return draftCache.items.some((item) => item?.sourceKey === sourceKey);
+  }
+
+  function getDraftSourceKeyForButton(button, payload = null) {
+    const article = findPayloadTweetArticleForButton(button);
+    const tweetUrl = payload?.tweetUrl || findTweetUrl(article) || normalizeTweetUrl(location.href);
+    const tweetId = payload?.tweetId || getTweetIdFromUrl(tweetUrl);
+    const route = getCurrentMediaRoute();
+
+    if (route && (!tweetId || tweetId === route.tweetId || !article)) {
+      return `${route.tweetId || tweetId}:${route.type}:${route.index}`;
+    }
+
+    return `tweet:${tweetId || tweetUrl}`;
+  }
+
+  function getCurrentMediaRoute() {
+    const match = location.pathname.match(/\/status\/(\d+)\/(photo|video)\/(\d+)/);
+    if (!match) {
+      return null;
+    }
+
+    return {
+      tweetId: match[1],
+      type: match[2],
+      index: Math.max(1, Number(match[3] || 1))
+    };
+  }
+
+  function selectDraftPayloadMedia(payload, sourceKey) {
+    const mediaItems = getPayloadMediaItems(payload);
+    if (!mediaItems.length) {
+      return payload;
+    }
+
+    const source = parseDraftMediaSourceKey(sourceKey);
+    if (source?.type === "photo" || source?.type === "video") {
+      // Media viewer URLs are one-based and usually match GraphQL media order.
+      const mediaIndex = source.index - 1;
+      let selected = mediaItems[mediaIndex] || null;
+      if (!selected || !mediaMatchesRouteType(selected, source.type)) {
+        selected = mediaItems.filter((item) => mediaMatchesRouteType(item, source.type))[mediaIndex] || selected;
+      }
+
+      if (selected) {
+        return {
+          ...payload,
+          media: selected,
+          mediaItems: [selected]
+        };
+      }
+    }
+
+    return {
+      ...payload,
+      media: mediaItems[0] || null,
+      mediaItems
+    };
+  }
+
+  function parseDraftMediaSourceKey(sourceKey) {
+    const match = String(sourceKey || "").match(/^([^:]+):(photo|video):(\d+)$/);
+    if (!match) {
+      return null;
+    }
+
+    return {
+      tweetId: match[1],
+      type: match[2],
+      index: Math.max(1, Number(match[3] || 1))
+    };
+  }
+
+  function mediaMatchesRouteType(media, routeType) {
+    return routeType === "photo" ? media?.type === "photo" : media?.type === "video";
+  }
+
+  function getPayloadMediaItems(payload) {
+    const mediaItems = Array.isArray(payload?.mediaItems) ? payload.mediaItems : [];
+    const items = mediaItems.length ? mediaItems : (payload?.media ? [payload.media] : []);
+    return items.filter((item) => item?.type === "photo" || item?.type === "video");
+  }
+
+  function assertForwardableMediaPayload(payload) {
+    const mediaItems = getPayloadMediaItems(payload);
+    if (!mediaItems.length) {
+      throw new Error(MESSAGE_NO_MEDIA());
+    }
+
+    if (mediaItems.some((media) => media.type === "video" && !hasDownloadableVideoCandidate(media))) {
+      throw new Error(MESSAGE_NO_DOWNLOADABLE_VIDEO());
+    }
+  }
+
+  function hasDownloadableVideoCandidate(media) {
+    return [
+      media?.url,
+      ...(Array.isArray(media?.candidates) ? media.candidates : [])
+    ]
+      .map((url) => typeof url === "string" ? cleanEscapedUrl(url) : "")
+      .some((url) => url && !url.startsWith("blob:") && isDownloadableTwitterVideoResource(url));
+  }
+
   /** Find all locations where forward buttons should be injected. */
   function findButtonMounts() {
     const mounts = [];
@@ -687,7 +787,7 @@
     const roots = [
       ...Array.from(document.querySelectorAll('[role="dialog"],[aria-modal="true"]')).filter(isVisible),
       document.body
-    ];
+    ].filter(Boolean);
 
     for (const root of roots) {
       const groups = findFooterActionRows(root, { allowCompactMediaFooter: true });
@@ -777,6 +877,7 @@
 
   function syncButtonSurface(button, mount) {
     button.dataset.tfSurface = mount.surface || "default";
+    syncButtonDraftState(button);
   }
 
   function isDarkSurface(element) {
@@ -876,18 +977,477 @@
   function collectTweetPayload(sourceButton) {
     // Multiple tweet articles can share one status page; the clicked footer decides which tweet to forward.
     const article = findPayloadTweetArticleForButton(sourceButton);
-    const mediaRoot = findPayloadMediaRootForButton(sourceButton, article);
-    // Keep the legacy single media field while adding mediaItems for mixed photo/video tweets.
-    const mediaItems = findVisibleMediaItems(mediaRoot);
-    const media = mediaItems[0] || null;
+    const tweetUrl = findTweetUrl(article) || normalizeTweetUrl(location.href);
 
     return {
-      tweetUrl: findTweetUrl(article) || normalizeTweetUrl(location.href),
+      tweetUrl,
+      tweetId: getTweetIdFromUrl(tweetUrl),
       author: extractAuthor(article),
       text: extractTweetText(article),
-      media,
-      mediaItems
+      media: null,
+      mediaItems: []
     };
+  }
+
+  function handleGraphqlMediaCacheMessage(event) {
+    if (event.source !== window) {
+      return;
+    }
+
+    const data = event.data;
+    if (data?.source !== GRAPHQL_MEDIA_CACHE_MESSAGE_SOURCE ||
+      data?.type !== GRAPHQL_MEDIA_CACHE_MESSAGE_TYPE ||
+      !Array.isArray(data.tweets)) {
+      return;
+    }
+
+    for (const tweet of data.tweets) {
+      rememberGraphqlMediaItems(tweet?.tweetId, tweet?.mediaItems);
+    }
+  }
+
+  function rememberGraphqlMediaItems(tweetId, mediaItems) {
+    const id = String(tweetId || "").trim();
+    const normalizedItems = normalizeCachedMediaItems(mediaItems);
+    if (!id || !normalizedItems.length) {
+      return;
+    }
+
+    graphqlMediaCache.delete(id);
+    graphqlMediaCache.set(id, {
+      mediaItems: normalizedItems,
+      updatedAt: Date.now()
+    });
+    trimGraphqlMediaCache();
+  }
+
+  function getCachedGraphqlMediaItems(tweetId) {
+    const cached = graphqlMediaCache.get(String(tweetId || "").trim());
+    return cached?.mediaItems ? cloneMediaItems(cached.mediaItems) : [];
+  }
+
+  function normalizeCachedMediaItems(mediaItems) {
+    if (!Array.isArray(mediaItems)) {
+      return [];
+    }
+
+    return dedupeMediaItems(mediaItems
+      .map(normalizeCachedMediaItem)
+      .filter(Boolean));
+  }
+
+  function normalizeCachedMediaItem(media) {
+    if (media?.type === "photo") {
+      const url = typeof media.url === "string" ? media.url : "";
+      if (!url) {
+        return null;
+      }
+
+      return {
+        type: "photo",
+        url: stripImageSizeParams(url),
+        thumbnail: stripImageSizeParams(media.thumbnail || url)
+      };
+    }
+
+    if (media?.type === "video") {
+      const candidates = [
+        ...(Array.isArray(media.candidates) ? media.candidates : []),
+        media.url
+      ]
+        .map((url) => typeof url === "string" ? cleanEscapedUrl(url) : "")
+        .filter((url) => url && isDownloadableTwitterVideoResource(url));
+      const uniqueCandidates = [...new Set(candidates)];
+      const thumbnail = typeof media.thumbnail === "string" ? media.thumbnail : "";
+
+      return {
+        type: "video",
+        url: uniqueCandidates[0] || "",
+        thumbnail: thumbnail ? stripImageSizeParams(thumbnail) : "",
+        sourceId: typeof media.sourceId === "string" ? media.sourceId : "",
+        candidates: uniqueCandidates
+      };
+    }
+
+    return null;
+  }
+
+  function cloneMediaItems(mediaItems) {
+    return mediaItems.map((media) => ({
+      ...media,
+      candidates: Array.isArray(media.candidates) ? [...media.candidates] : media.candidates
+    }));
+  }
+
+  function trimGraphqlMediaCache() {
+    while (graphqlMediaCache.size > MAX_GRAPHQL_MEDIA_CACHE_ENTRIES) {
+      const oldestKey = graphqlMediaCache.keys().next().value;
+      graphqlMediaCache.delete(oldestKey);
+    }
+  }
+
+  async function hydrateTweetPayloadMediaFromGraphql(payload) {
+    const tweetId = payload?.tweetId || getTweetIdFromUrl(payload?.tweetUrl);
+    if (!tweetId) {
+      return payload;
+    }
+
+    try {
+      const cachedMediaItems = getCachedGraphqlMediaItems(tweetId);
+      const mediaItems = cachedMediaItems.length ? cachedMediaItems : await fetchGraphqlTweetMediaItems(tweetId);
+      if (!mediaItems.length) {
+        return payload;
+      }
+
+      rememberGraphqlMediaItems(tweetId, mediaItems);
+      return {
+        ...payload,
+        tweetId,
+        media: mediaItems[0] || null,
+        mediaItems
+      };
+    } catch {
+      return payload;
+    }
+  }
+
+  async function fetchGraphqlTweetMediaItems(tweetId) {
+    const capturedRequests = await getCapturedTweetGraphqlRequests();
+    const directRequest = buildTweetGraphqlRequest(tweetId, capturedRequests);
+    if (!directRequest) {
+      return [];
+    }
+
+    return fetchGraphqlRequestMediaItems(directRequest, tweetId);
+  }
+
+  async function fetchGraphqlRequestMediaItems(request, tweetId) {
+    if (!request?.url || !request.headers) {
+      return [];
+    }
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), GRAPHQL_MEDIA_QUERY_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(request.url, {
+        credentials: "include",
+        signal: controller.signal,
+        headers: request.headers
+      });
+
+      if (!response.ok) {
+        return [];
+      }
+
+      const data = await response.json();
+      const tweet = findGraphqlTweetById(data, tweetId);
+      return extractGraphqlMediaItems(tweet);
+    } catch {
+      return [];
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  function buildTweetGraphqlRequest(tweetId, capturedRequests) {
+    const templates = findTweetGraphqlRequestTemplates(capturedRequests);
+    const preferredTemplate = templates.find((template) => template.operationName === "TweetResultByRestId") ||
+      templates.find((template) => template.operationName === "TweetDetail");
+    if (!preferredTemplate) {
+      return null;
+    }
+
+    const url = new URL(preferredTemplate.url, location.href);
+    url.protocol = location.protocol;
+    url.host = location.host;
+
+    const variables = parseJsonSearchParam(url.searchParams.get("variables")) || {};
+    if (preferredTemplate.operationName === "TweetResultByRestId") {
+      variables.tweetId = tweetId;
+    } else {
+      variables.focalTweetId = tweetId;
+    }
+
+    url.searchParams.set("variables", JSON.stringify(variables));
+    return {
+      url: url.toString(),
+      headers: preferredTemplate.headers
+    };
+  }
+
+  function findTweetGraphqlRequestTemplates(requests) {
+    const templates = (Array.isArray(requests) ? requests : [])
+      .map(parseTweetGraphqlRequestTemplate)
+      .filter(Boolean);
+    const seen = new Set();
+    return templates
+      .reverse()
+      .filter((template) => {
+        const key = template.operationName;
+        if (seen.has(key)) {
+          return false;
+        }
+
+        seen.add(key);
+        return true;
+      });
+  }
+
+  async function getCapturedTweetGraphqlRequests() {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "GET_CAPTURED_TWEET_GRAPHQL_REQUESTS" });
+      return Array.isArray(response?.result) ? response.result.filter((request) => isTweetGraphqlUrl(request?.url)) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function parseTweetGraphqlRequestTemplate(request) {
+    const template = parseTweetGraphqlTemplate(request?.url);
+    const headers = normalizeGraphqlHeaders(request?.headers);
+    if (!template || !headers) {
+      return null;
+    }
+
+    return {
+      ...template,
+      headers
+    };
+  }
+
+  function normalizeGraphqlHeaders(headers) {
+    if (!headers || typeof headers !== "object") {
+      return null;
+    }
+
+    const allowedHeaders = [
+      "authorization",
+      "content-type",
+      "x-csrf-token",
+      "x-twitter-active-user",
+      "x-twitter-auth-type",
+      "x-twitter-client-language"
+    ];
+    const result = {};
+    for (const name of allowedHeaders) {
+      const value = getHeaderCaseInsensitive(headers, name);
+      if (value) {
+        result[name] = value;
+      }
+    }
+
+    return result.authorization && result["x-csrf-token"] ? result : null;
+  }
+
+  function getHeaderCaseInsensitive(headers, name) {
+    const match = Object.entries(headers)
+      .find(([key]) => key.toLowerCase() === name.toLowerCase());
+    return typeof match?.[1] === "string" ? match[1] : "";
+  }
+
+  function parseTweetGraphqlTemplate(url) {
+    try {
+      const parsed = new URL(url, location.href);
+      const operationName = getGraphqlOperationName(parsed.toString());
+      if (!isDirectTweetGraphqlOperation(operationName)) {
+        return null;
+      }
+
+      return { url: parsed.toString(), operationName };
+    } catch {
+      return null;
+    }
+  }
+
+  function isTweetGraphqlUrl(url) {
+    if (typeof url !== "string" || !url.includes("/i/api/graphql/")) {
+      return false;
+    }
+
+    return isTweetGraphqlOperation(getGraphqlOperationName(url));
+  }
+
+  function getGraphqlOperationName(url) {
+    try {
+      return new URL(url, location.href).pathname.match(/\/i\/api\/graphql\/[^/]+\/([^/?#]+)/)?.[1] || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function isTweetGraphqlOperation(operationName) {
+    if (isDirectTweetGraphqlOperation(operationName)) {
+      return true;
+    }
+
+    return /(?:Timeline|Tweets|Bookmarks|SearchTimeline|UserMedia|Likes)/.test(operationName) &&
+      !/^(Create|Delete|Favorite|Retweet|Unretweet|BookmarkTweet|Unbookmark|LikeTweet|UnlikeTweet|Follow|Mute|Block|Report|Update|Edit)/.test(operationName);
+  }
+
+  function isDirectTweetGraphqlOperation(operationName) {
+    return operationName === "TweetResultByRestId" || operationName === "TweetDetail";
+  }
+
+  function parseJsonSearchParam(value) {
+    if (!value) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+
+  function findGraphqlTweetById(value, tweetId, seen = new Set()) {
+    if (!value || typeof value !== "object" || seen.has(value)) {
+      return null;
+    }
+
+    seen.add(value);
+
+    const unwrapped = unwrapGraphqlTweet(value);
+    if (unwrapped?.rest_id === tweetId && unwrapped?.legacy) {
+      return unwrapped;
+    }
+
+    for (const child of Object.values(value)) {
+      const found = findGraphqlTweetById(child, tweetId, seen);
+      if (found) {
+        return found;
+      }
+    }
+
+    return null;
+  }
+
+  function unwrapGraphqlTweet(value) {
+    let current = value;
+    const seen = new Set();
+
+    while (current && typeof current === "object" && !seen.has(current)) {
+      seen.add(current);
+
+      if (current.rest_id && current.legacy) {
+        return current;
+      }
+
+      if (current.tweet && typeof current.tweet === "object") {
+        current = current.tweet;
+        continue;
+      }
+
+      if (current.tweet_results?.result && typeof current.tweet_results.result === "object") {
+        current = current.tweet_results.result;
+        continue;
+      }
+
+      break;
+    }
+
+    return current;
+  }
+
+  function extractGraphqlMediaItems(tweet) {
+    const media = tweet?.legacy?.extended_entities?.media || tweet?.legacy?.entities?.media || [];
+    if (!Array.isArray(media) || !media.length) {
+      return [];
+    }
+
+    return dedupeMediaItems(media
+      .map(createMediaItemFromGraphqlMedia)
+      .filter(Boolean));
+  }
+
+  function createMediaItemFromGraphqlMedia(media) {
+    if (media?.type === "photo") {
+      const url = media.media_url_https || media.media_url || "";
+      if (!url) {
+        return null;
+      }
+
+      return {
+        type: "photo",
+        url: stripImageSizeParams(url),
+        thumbnail: stripImageSizeParams(url)
+      };
+    }
+
+    if (media?.type === "video" || media?.type === "animated_gif") {
+      const candidates = getGraphqlVideoCandidates(media);
+      const thumbnail = media.media_url_https || media.media_url || "";
+      return {
+        type: "video",
+        url: candidates[0] || "",
+        thumbnail: thumbnail ? stripImageSizeParams(thumbnail) : "",
+        sourceId: getGraphqlMediaSourceId(media),
+        candidates
+      };
+    }
+
+    return null;
+  }
+
+  function getGraphqlVideoCandidates(media) {
+    const variants = Array.isArray(media?.video_info?.variants) ? media.video_info.variants : [];
+    const candidates = variants
+      .map((variant) => ({
+        url: typeof variant?.url === "string" ? cleanEscapedUrl(variant.url) : "",
+        bitrate: Number(variant?.bitrate || 0),
+        contentType: String(variant?.content_type || "")
+      }))
+      .filter((variant) => variant.url && isDownloadableTwitterVideoResource(variant.url))
+      .sort(rankGraphqlVideoVariant);
+
+    const seen = new Set();
+    return candidates
+      .map((variant) => variant.url)
+      .filter((url) => {
+        if (seen.has(url)) {
+          return false;
+        }
+
+        seen.add(url);
+        return true;
+      });
+  }
+
+  function rankGraphqlVideoVariant(a, b) {
+    const aIsMp4 = isMp4VideoVariant(a);
+    const bIsMp4 = isMp4VideoVariant(b);
+    if (aIsMp4 !== bIsMp4) {
+      return bIsMp4 - aIsMp4;
+    }
+
+    const bitrateDiff = Number(b.bitrate || 0) - Number(a.bitrate || 0);
+    if (bitrateDiff) {
+      return bitrateDiff;
+    }
+
+    return getVideoCandidatePixels(b.url) - getVideoCandidatePixels(a.url);
+  }
+
+  function isMp4VideoVariant(variant) {
+    return variant?.url?.includes(".mp4") || variant?.contentType === "video/mp4";
+  }
+
+  function getGraphqlMediaSourceId(media) {
+    const mediaKeyId = String(media?.media_key || "").split("_").pop();
+    return getTwitterVideoMediaId(media?.media_url_https || media?.media_url || "") ||
+      getTwitterVideoMediaId(media?.expanded_url || "") ||
+      getTwitterVideoMediaId(mediaKeyId) ||
+      getTwitterVideoMediaId(media?.id_str || "") ||
+      "";
+  }
+
+  function getTweetIdFromUrl(url) {
+    try {
+      return new URL(url, location.href).pathname.match(/\/status\/(\d+)/)?.[1] || "";
+    } catch {
+      return "";
+    }
   }
 
   function findTweetArticleForButton(button) {
@@ -896,90 +1456,7 @@
 
   function findPayloadTweetArticleForButton(button) {
     const buttonArticle = findTweetArticleForButton(button);
-    if (buttonArticle) {
-      return buttonArticle;
-    }
-
-    if (button?.dataset?.tfSurface === "media" && isPhotoMediaPage()) {
-      return findPhotoMediaTweetArticle() || findMainTweetArticle();
-    }
-
-    return findMainTweetArticle();
-  }
-
-  function findPayloadMediaRootForButton(button, article = null) {
-    if (button?.dataset?.tfSurface === "media" && isPhotoMediaPage()) {
-      return article ||
-        findMediaViewerRootForButton(button) ||
-        document;
-    }
-
-    return findMediaRootForButton(button, article);
-  }
-
-  function findMediaRootForButton(button, article = null) {
-    return findMediaViewerRootForButton(button) ||
-      article ||
-      findTweetArticleForButton(button) ||
-      findMainTweetArticle() ||
-      document;
-  }
-
-  function findMediaViewerRootForButton(button) {
-    if (!button || button.dataset.tfSurface !== "media") {
-      return null;
-    }
-
-    let node = button.parentElement;
-    while (node && node !== document.body) {
-      if (hasDetachedVisibleMedia(node)) {
-        return node;
-      }
-
-      if (node.getAttribute("role") === "dialog") {
-        break;
-      }
-
-      node = node.parentElement;
-    }
-
-    return null;
-  }
-
-  function isPhotoMediaPage() {
-    return /\/status\/\d+\/photo\/\d+/.test(location.pathname);
-  }
-
-  function findPhotoMediaTweetArticle() {
-    const tweetUrl = normalizeTweetUrl(location.href);
-    const articles = findTweetArticles();
-    return articles.find((article) => articleMatchesTweetUrl(article, tweetUrl) && hasVisibleTweetMedia(article)) ||
-      articles.find(hasVisibleTweetMedia) ||
-      null;
-  }
-
-  function articleMatchesTweetUrl(article, tweetUrl) {
-    if (!tweetUrl) {
-      return true;
-    }
-
-    return Array.from(article?.querySelectorAll('a[href*="/status/"]') || [])
-      .some((anchor) => normalizeTweetUrl(anchor.href) === tweetUrl);
-  }
-
-  function hasVisibleTweetMedia(root) {
-    const media = Array.from(root?.querySelectorAll('img[src*="twimg.com/media"],video') || []);
-    if (media.some((element) => isVisible(element) && isInsideRootBounds(element, root))) {
-      return true;
-    }
-
-    return Array.from(root?.querySelectorAll('a[href*="/status/"][href*="/photo/"],a[href*="/status/"][href*="/video/"]') || [])
-      .some(isVisible);
-  }
-
-  function hasDetachedVisibleMedia(root) {
-    return Array.from(root.querySelectorAll('img[src*="twimg.com/media"],video'))
-      .some((media) => !media.closest("article") && isVisible(media) && isInsideRootBounds(media, root));
+    return buttonArticle || findMainTweetArticle();
   }
 
   /** Extract the canonical tweet URL from a tweet article element. */
@@ -1007,9 +1484,10 @@
   }
 
   function findTweetArticles() {
-    // Status pages can contain the source tweet plus one or more reply articles.
+    // Status, timeline, search, and profile pages can all contain multiple tweet articles.
     return Array.from(document.querySelectorAll("article"))
       .filter(isVisible)
+      .filter((article) => findTweetUrl(article))
       .filter((article) => article.querySelector('[data-testid="reply"],[data-testid="retweet"],[data-testid="like"],[data-testid="bookmark"]'));
   }
 
@@ -1028,77 +1506,6 @@
     return el.textContent.trim();
   }
 
-  /** Find visible media items (images/videos) on the current page or in a tweet. */
-  function findVisibleMedia(root = document) {
-    return findVisibleMediaItems(root)[0] || null;
-  }
-
-  /** Find visible <img> and <video> elements and extract their metadata. */
-  function findVisibleMediaItems(root = document) {
-    // Mixed tweets render photos and videos as separate DOM media nodes inside the same article.
-    const items = [];
-    const videos = findVisibleVideos(root);
-
-    for (const video of videos) {
-      const videoCandidates = collectVideoCandidates(video);
-      items.push({
-        type: "video",
-        url: video.currentSrc || video.src || videoCandidates[0] || "",
-        thumbnail: findVideoThumbnail(video),
-        candidates: videoCandidates,
-        order: getElementOrder(video)
-      });
-    }
-
-    const images = Array.from(root.querySelectorAll('img[src*="twimg.com/media"]'))
-      .filter(isVisible)
-      .filter((image) => isInsideRootBounds(image, root))
-      .map((image) => ({
-        type: "photo",
-        url: stripImageSizeParams(image.src),
-        thumbnail: stripImageSizeParams(image.src),
-        order: getElementOrder(image)
-      }));
-
-    for (const image of dedupeMediaItems(images)) {
-      items.push(image);
-    }
-
-    const sortedItems = dedupeMediaItems(items)
-      .sort((a, b) => a.order - b.order)
-      .map(({ order, ...item }) => item);
-
-    const videoCandidates = videos.length ? [] : collectVideoCandidates(null);
-    if (!sortedItems.length && (videoCandidates.length || /\/status\/\d+\/video\//.test(location.pathname))) {
-      return [{
-        type: "video",
-        url: videoCandidates[0] || "",
-        thumbnail: findFallbackVideoThumbnail(root),
-        candidates: videoCandidates
-      }];
-    }
-
-    return sortedItems;
-  }
-
-  /** Find the best thumbnail URL for a video element. */
-  function findVideoThumbnail(video) {
-    if (video?.poster) {
-      return stripImageSizeParams(video.poster);
-    }
-
-    return findFallbackVideoThumbnail(video?.closest("article") || document);
-  }
-
-  function findFallbackVideoThumbnail(root = document) {
-    // X often renders the video poster as a nearby twimg image rather than video.poster.
-    const image = Array.from(root.querySelectorAll('img[src*="twimg.com"]'))
-      .filter(isVisible)
-      .find((candidate) => /(?:ext_tw_video_thumb|amplify_video_thumb|media)/.test(candidate.src));
-
-    return image?.src ? stripImageSizeParams(image.src) : "";
-  }
-
   /** Deduplicate media items by URL, keeping the first occurrence. */
   function dedupeMediaItems(items) {
     const seen = new Set();
@@ -1113,46 +1520,22 @@
     });
   }
 
-  function getElementOrder(element) {
-    const rect = element.getBoundingClientRect();
-    return rect.top * 100000 + rect.left;
-  }
-
-  function findVisibleElements(selector, root = document) {
-    return Array.from(root.querySelectorAll(selector)).filter(isVisible);
-  }
-
-  function findVisibleVideos(root = document) {
-    return findVisibleElements("video", root)
-      .filter((video) => isInsideRootBounds(video, root));
-  }
-
-  /** Extract downloadable video source URLs from a <video> element. */
-  function collectVideoCandidates(video) {
-    const candidates = [];
-
-    if (video?.currentSrc) {
-      candidates.push(video.currentSrc);
+  function getTwitterVideoMediaId(url) {
+    const value = typeof url === "string" ? cleanEscapedUrl(url) : "";
+    if (!value) {
+      return "";
+    }
+    if (/^[A-Za-z0-9_-]{4,}$/.test(value)) {
+      return value;
     }
 
-    if (video?.src) {
-      candidates.push(video.src);
+    const pathMatch = value.match(/\/(?:amplify_video|amplify_video_thumb|ext_tw_video|ext_tw_video_thumb)\/([^/?#]+)\//);
+    if (pathMatch) {
+      return pathMatch[1];
     }
 
-    video?.querySelectorAll("source[src]")?.forEach((source) => {
-      candidates.push(source.src);
-    });
-
-    performance.getEntriesByType("resource")
-      .map((entry) => entry.name)
-      .filter(isTwitterVideoResource)
-      .forEach((url) => candidates.push(url));
-
-    findTwitterVideoUrlsInPage().forEach((url) => candidates.push(url));
-
-    return [...new Set(candidates.map(cleanEscapedUrl))]
-      .filter((url) => url && !url.startsWith("blob:") && isDownloadableTwitterVideoResource(url))
-      .sort(rankVideoCandidate);
+    const tweetVideoMatch = value.match(/\/(?:tweet_video|tweet_video_thumb)\/([^/?#.]+)/);
+    return tweetVideoMatch?.[1] || "";
   }
 
   function isTwitterVideoResource(url) {
@@ -1166,13 +1549,6 @@
     return isTwitterVideoResource(url) && !/\/(?:vid|aud)\/[^/]+\/0\/0\//.test(url);
   }
 
-  /** Scan the page for twitter video URLs captured via webRequest. */
-  function findTwitterVideoUrlsInPage() {
-    const html = document.documentElement.innerHTML;
-    const matches = html.match(/https?:[\\/]+video\.twimg\.com[\\/]+[^"'<\s]+?(?:\.mp4|\.m3u8)(?:\?[^"'<\s]*)?/g) || [];
-    return matches;
-  }
-
   function cleanEscapedUrl(url) {
     return url
       .replaceAll("\\/", "/")
@@ -1180,47 +1556,15 @@
       .replace(/\\u0026/g, "&");
   }
 
-  function rankVideoCandidate(a, b) {
-    const aIsMp4 = a.includes(".mp4") ? 1 : 0;
-    const bIsMp4 = b.includes(".mp4") ? 1 : 0;
-
-    if (aIsMp4 !== bIsMp4) {
-      return bIsMp4 - aIsMp4;
-    }
-
-    return getVideoCandidatePixels(b) - getVideoCandidatePixels(a);
-  }
-
   function getVideoCandidatePixels(url) {
     const match = url.match(/\/(\d+)x(\d+)\//);
     return match ? Number(match[1]) * Number(match[2]) : 0;
-  }
-
-  function findVisibleElement(selector, root = document) {
-    return Array.from(root.querySelectorAll(selector)).find(isVisible) || null;
   }
 
   function isVisible(element) {
     const rect = element.getBoundingClientRect();
     const style = window.getComputedStyle(element);
     return rect.width > 8 && rect.height > 8 && style.visibility !== "hidden" && style.display !== "none";
-  }
-
-  function isInsideRootBounds(element, root = document) {
-    if (!root || root === document || root === document.body || root === document.documentElement) {
-      return true;
-    }
-
-    const rect = element.getBoundingClientRect();
-    const rootRect = root.getBoundingClientRect();
-    if (!rootRect.width || !rootRect.height) {
-      return true;
-    }
-
-    return rect.right > rootRect.left &&
-      rect.left < rootRect.right &&
-      rect.bottom > rootRect.top &&
-      rect.top < rootRect.bottom;
   }
 
   // ==================== UI Helpers ====================
@@ -1257,7 +1601,7 @@
     }
 
     button.disabled = disabled;
-    button.innerHTML = label === LABEL_SENT ? ICON_SENT : ICON_READY;
+    button.innerHTML = label === LABEL_SENT() ? ICON_SENT : ICON_READY;
     // X's native tooltip is internal to its React tree; browser-native title avoids brittle imitation.
     button.title = label;
     button.setAttribute("aria-label", label);

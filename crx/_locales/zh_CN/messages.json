@@ -117,7 +117,7 @@
     "message": "等待"
   },
   "popup_phaseSending": {
-    "message": "发送"
+    "message": "处理中"
   },
   "popup_phaseUpload": {
     "message": "上传"
@@ -139,6 +139,18 @@
   },
   "popup_failed": {
     "message": "失败"
+  },
+  "popup_draftBox": {
+    "message": "草稿箱"
+  },
+  "popup_draft": {
+    "message": "草稿"
+  },
+  "popup_clearDraft": {
+    "message": "清空草稿箱"
+  },
+  "popup_sendDraft": {
+    "message": "发送草稿箱"
   },
   "popup_dragReorder": {
     "message": "拖动排序"
@@ -263,6 +275,9 @@
   "bg_noTweetUrl": {
     "message": "未找到要转发的推文 URL。"
   },
+  "bg_noMedia": {
+    "message": "这条推文没有可转发的媒体。"
+  },
   "bg_missingConfigFields": {
     "message": "请填写备注、Bot Token 和 Channel ID。"
   },
@@ -317,6 +332,18 @@
   "bg_telegramApiFailed": {
     "message": "Telegram API 调用失败：$1"
   },
+  "bg_noDraftMedia": {
+    "message": "未找到可加入草稿箱的媒体。"
+  },
+  "bg_emptyDraft": {
+    "message": "草稿箱为空。"
+  },
+  "bg_photoTooLarge": {
+    "message": "图片超过 Telegram 10 MB 上传限制。"
+  },
+  "bg_videoTooLarge": {
+    "message": "视频超过 Telegram 50 MB 上传限制。"
+  },
   "content_labelReady": {
     "message": "转发到 Telegram"
   },
@@ -334,6 +361,21 @@
   },
   "content_messageFailed": {
     "message": "转发失败，请稍后重试。"
+  },
+  "content_noMedia": {
+    "message": "这条推文没有可转发的媒体。"
+  },
+  "content_noDownloadableVideo": {
+    "message": "未找到可下载的视频 URL。请打开视频后重试。"
+  },
+  "content_draftAdded": {
+    "message": "已加入草稿箱（$1 个媒体）"
+  },
+  "content_draftRemoved": {
+    "message": "已从草稿箱移除（$1 个媒体）"
+  },
+  "content_draftQueued": {
+    "message": "草稿箱已加入 Telegram 转发队列"
   },
   "content_noConfig": {
     "message": "请先在扩展 popup 中添加 Telegram 配置"

@@ -117,7 +117,7 @@
     "message": "Pending"
   },
   "popup_phaseSending": {
-    "message": "Sending"
+    "message": "Processing"
   },
   "popup_phaseUpload": {
     "message": "Uploading"
@@ -139,6 +139,18 @@
   },
   "popup_failed": {
     "message": "Failed"
+  },
+  "popup_draftBox": {
+    "message": "Draft box"
+  },
+  "popup_draft": {
+    "message": "Draft"
+  },
+  "popup_clearDraft": {
+    "message": "Clear draft box"
+  },
+  "popup_sendDraft": {
+    "message": "Send draft box"
   },
   "popup_dragReorder": {
     "message": "Drag to reorder"
@@ -264,6 +276,9 @@
   "bg_noTweetUrl": {
     "message": "No tweet URL found to forward."
   },
+  "bg_noMedia": {
+    "message": "This tweet has no media to forward."
+  },
   "bg_missingConfigFields": {
     "message": "Please fill in note, Bot Token and Channel ID."
   },
@@ -318,6 +333,18 @@
   "bg_telegramApiFailed": {
     "message": "Telegram API call failed: $1"
   },
+  "bg_noDraftMedia": {
+    "message": "No media was found for the draft box."
+  },
+  "bg_emptyDraft": {
+    "message": "The draft box is empty."
+  },
+  "bg_photoTooLarge": {
+    "message": "The image exceeds Telegram's 10 MB upload limit."
+  },
+  "bg_videoTooLarge": {
+    "message": "The video exceeds Telegram's 50 MB upload limit."
+  },
   "content_labelReady": {
     "message": "Forward to Telegram"
   },
@@ -335,6 +362,21 @@
   },
   "content_messageFailed": {
     "message": "Forward failed, please try again later."
+  },
+  "content_noMedia": {
+    "message": "This tweet has no media to forward."
+  },
+  "content_noDownloadableVideo": {
+    "message": "No downloadable video URL found. Please open the video and try again."
+  },
+  "content_draftAdded": {
+    "message": "Added to draft box ($1 media item(s))"
+  },
+  "content_draftRemoved": {
+    "message": "Removed from draft box ($1 media item(s))"
+  },
+  "content_draftQueued": {
+    "message": "Draft box added to Telegram forward queue"
   },
   "content_noConfig": {
     "message": "Please add a Telegram configuration in the extension popup first"

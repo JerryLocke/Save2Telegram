@@ -2,6 +2,7 @@
 
 [![Build](https://github.com/JerryLocke/Save2Telegram/actions/workflows/build.yml/badge.svg)](https://github.com/JerryLocke/Save2Telegram/actions/workflows/build.yml)
 [![Latest Release](https://img.shields.io/github/v/release/JerryLocke/Save2Telegram?sort=semver)](https://github.com/JerryLocke/Save2Telegram/releases/latest)
+[![Chrome Web Store](https://img.shields.io/chrome-web-store/v/hibaajhphchibdfkciepacbnifbeiikc?label=Chrome%20Web%20Store&logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/hibaajhphchibdfkciepacbnifbeiikc)
 [![GHCR](https://img.shields.io/badge/image-ghcr.io%2Fjerrylocke%2Fsave2telegram--backend-blue)](https://github.com/JerryLocke/Save2Telegram/pkgs/container/save2telegram-backend)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -15,6 +16,10 @@ Save2Telegram 是一个 Chrome MV3 扩展，用于把 X/Twitter 推文里的媒�
 - `backend/`：可选的 Node.js 转发后端，支持 Docker 部署。
 
 ## 安装扩展
+
+从 [Chrome Web Store](https://chromewebstore.google.com/detail/hibaajhphchibdfkciepacbnifbeiikc) 安装扩展。
+
+如需从源码加载扩展：
 
 1. 打开 `chrome://extensions/`。
 2. 开启开发者模式。

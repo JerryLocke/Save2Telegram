@@ -1,5 +1,6 @@
 import { AppError, Err } from "./errors.js";
 import { checkCancelled, updateJob } from "./jobs.js";
+import { cleanupUploadFile, createTempUploadFile, createUploadFileWriteStream, finishWriteStream, writeChunk } from "./upload-file.js";
 
 const VIDEO_HOST_PATTERN = /^https:\/\/video\.twimg\.com\//;
 
@@ -31,7 +32,7 @@ function createJobDownloadProgress(job, progressScope = {}) {
 }
 
 /** Download a Twitter/X video from the best available candidate URL. */
-export async function downloadTwitterVideo(payload, job = null, progressScope = {}) {
+export async function downloadTwitterVideo(payload, job = null, progressScope = {}, options = {}) {
   checkCancelled(job);
   const itemIndex = Math.max(0, Number(progressScope.itemIndex || 0));
   const itemTotal = Math.max(1, Number(progressScope.itemTotal || 1));
@@ -52,12 +53,17 @@ export async function downloadTwitterVideo(payload, job = null, progressScope = 
   for (const candidate of candidates) {
     try {
       if (candidate.includes(".m3u8")) {
-        return downloadM3u8Video(candidate, job, progressScope);
+        return await downloadM3u8Video(candidate, job, progressScope, options);
       }
 
       checkCancelled(job);
-      const blob = await fetchVideoBlob(candidate, createJobDownloadProgress(job, progressScope), signal);
-      return { blob, size: blob.size, filename: "twitter-video.mp4" };
+      return await fetchVideoFile(candidate, {
+        filename: "twitter-video.mp4",
+        fallbackType: "video/mp4",
+        maxBytes: options.maxBytes,
+        onProgress: createJobDownloadProgress(job, progressScope),
+        signal
+      });
     } catch (error) {
       if (signal?.aborted || error?.name === "AbortError" || error?.code === Err.CANCELLED || error?.message === "Task cancelled by user.") {
         throw new AppError(Err.CANCELLED, "Task cancelled by user.");
@@ -76,7 +82,7 @@ function normalizeVideoCandidates(media) {
     ...(Array.isArray(media.candidates) ? media.candidates : [])
   ].filter((url) => typeof url === "string" && url && !url.startsWith("blob:"));
 
-  return [...new Set(urls)].filter(isDownloadableTwitterVideoUrl).sort(rankVideoUrl);
+  return [...new Set(urls)].filter(isDownloadableTwitterVideoUrl).sort(rankVideoUrlType);
 }
 
 /** Check if a URL points to a downloadable Twitter video resource. */
@@ -88,56 +94,52 @@ function isDownloadableTwitterVideoUrl(url) {
   return url.includes(".m3u8") || (url.includes(".mp4") && !/\/(?:vid|aud)\/[^/]+\/0\/0\//.test(url));
 }
 
-/** Sort two video URLs by quality (highest resolution first). */
-function rankVideoUrl(a, b) {
+/** Prefer direct MP4 candidates while preserving the payload's quality order within each type. */
+function rankVideoUrlType(a, b) {
   const aIsMp4 = a.includes(".mp4") ? 1 : 0;
   const bIsMp4 = b.includes(".mp4") ? 1 : 0;
-  return aIsMp4 !== bIsMp4 ? bIsMp4 - aIsMp4 : getVideoUrlPixels(b) - getVideoUrlPixels(a);
+  return bIsMp4 - aIsMp4;
 }
 
-/** Extract the resolution pixel count from a Twitter video URL. */
-function getVideoUrlPixels(url) {
-  const match = url.match(/\/(\d+)x(\d+)\//);
-  return match ? Number(match[1]) * Number(match[2]) : 0;
-}
-
-/** Fetch a video URL as a Blob with optional progress reporting and abort support. */
-async function fetchVideoBlob(url, onProgress = null, signal) {
+/** Fetch a video URL into a temporary file with optional progress reporting. */
+async function fetchVideoFile(url, {
+  filename = "twitter-video.mp4",
+  fallbackType = "video/mp4",
+  maxBytes = 0,
+  onProgress = null,
+  signal = null
+} = {}) {
   const response = await fetch(url, { signal });
   if (!response.ok) {
     throw new AppError(Err.DOWNLOAD_ERROR, `${response.status} ${response.statusText}`);
   }
 
-  const total = Number(response.headers.get("Content-Length") || 0);
-  if (!response.body || !onProgress) {
-    const blob = await response.blob();
-    if (onProgress) {
-      onProgress({ loaded: blob.size, total: total || blob.size });
-    }
-    return blob;
+  // Fail before writing when the server declares a file too large for Telegram.
+  assertWithinMaxBytes(Number(response.headers.get("Content-Length") || 0), maxBytes);
+  const uploadFile = await createTempUploadFile({
+    prefix: "twitter-video",
+    filename,
+    contentType: response.headers.get("Content-Type") || fallbackType
+  });
+  const writeStream = createUploadFileWriteStream(uploadFile);
+
+  try {
+    uploadFile.size = await appendResponseToFile(response, writeStream, {
+      maxBytes,
+      onProgress,
+      signal
+    });
+    await finishWriteStream(writeStream);
+    return uploadFile;
+  } catch (error) {
+    writeStream.destroy();
+    await cleanupUploadFile(uploadFile);
+    throw error;
   }
-
-  const reader = response.body.getReader();
-  const chunks = [];
-  let loaded = 0;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-
-    chunks.push(value);
-    loaded += value.byteLength;
-    onProgress({ loaded, total });
-  }
-
-  onProgress({ loaded, total: total || loaded });
-  return new Blob(chunks, { type: response.headers.get("Content-Type") || "video/mp4" });
 }
 
-/** Download an HLS (m3u8) video stream by fetching and concatenating all segments. */
-async function downloadM3u8Video(url, job = null, progressScope = {}) {
+/** Download an HLS (m3u8) video stream by appending all segments to a temporary file. */
+async function downloadM3u8Video(url, job = null, progressScope = {}, options = {}) {
   checkCancelled(job);
   const signal = job?.abortController?.signal;
   const playlist = await fetchText(url, signal);
@@ -153,22 +155,106 @@ async function downloadM3u8Video(url, job = null, progressScope = {}) {
     throw new AppError(Err.DOWNLOAD_FAILED, "No HLS video segments were found.");
   }
 
-  const blobs = [];
+  const isFragmentedMp4 = parts.some((partUrl) => /\.(m4s|cmfv|mp4)(\?|$)/.test(partUrl));
+  const uploadFile = await createTempUploadFile({
+    prefix: "twitter-video",
+    filename: isFragmentedMp4 ? "twitter-video.mp4" : "twitter-video.ts",
+    contentType: isFragmentedMp4 ? "video/mp4" : "video/mp2t"
+  });
+  const writeStream = createUploadFileWriteStream(uploadFile);
+  let loaded = 0;
+
+  // Keep one file open across segments to avoid holding each segment in memory.
   for (let index = 0; index < parts.length; index += 1) {
-    checkCancelled(job);
-    const progress = createJobDownloadProgress(job, {
-      ...progressScope,
-      partIndex: index,
-      partTotal: parts.length
-    });
-    blobs.push(await fetchVideoBlob(parts[index], progress, signal));
+    try {
+      checkCancelled(job);
+      const progress = createJobDownloadProgress(job, {
+        ...progressScope,
+        partIndex: index,
+        partTotal: parts.length
+      });
+      const response = await fetch(parts[index], { signal });
+      if (!response.ok) {
+        throw new AppError(Err.DOWNLOAD_ERROR, `${response.status} ${response.statusText}`);
+      }
+
+      const contentLength = Number(response.headers.get("Content-Length") || 0);
+      assertWithinMaxBytes(contentLength ? loaded + contentLength : 0, options.maxBytes);
+      loaded = await appendResponseToFile(response, writeStream, {
+        initialLoaded: loaded,
+        maxBytes: options.maxBytes,
+        onProgress: progress,
+        signal
+      });
+    } catch (error) {
+      writeStream.destroy();
+      await cleanupUploadFile(uploadFile);
+      throw error;
+    }
   }
 
-  const isFragmentedMp4 = parts.some((partUrl) => /\.(m4s|cmfv|mp4)(\?|$)/.test(partUrl));
-  return {
-    blob: new Blob(blobs, { type: isFragmentedMp4 ? "video/mp4" : "video/mp2t" }),
-    filename: isFragmentedMp4 ? "twitter-video.mp4" : "twitter-video.ts"
-  };
+  try {
+    uploadFile.size = loaded;
+    await finishWriteStream(writeStream);
+    return uploadFile;
+  } catch (error) {
+    writeStream.destroy();
+    await cleanupUploadFile(uploadFile);
+    throw error;
+  }
+}
+
+/** Append a fetch response body to an open temporary file. */
+async function appendResponseToFile(response, writeStream, {
+  initialLoaded = 0,
+  maxBytes = 0,
+  onProgress = null,
+  signal = null
+} = {}) {
+  const total = Number(response.headers.get("Content-Length") || 0);
+  let loaded = initialLoaded;
+  let responseLoaded = 0;
+
+  if (!response.body) {
+    const chunk = new Uint8Array(await response.arrayBuffer());
+    loaded += chunk.byteLength;
+    assertWithinMaxBytes(loaded, maxBytes);
+    await writeChunk(writeStream, chunk);
+    onProgress?.({ loaded: chunk.byteLength, total: total || chunk.byteLength });
+    return loaded;
+  }
+
+  const reader = response.body.getReader();
+  while (true) {
+    if (signal?.aborted) {
+      throw new AppError(Err.CANCELLED, "Task cancelled by user.");
+    }
+
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    loaded += value.byteLength;
+    responseLoaded += value.byteLength;
+    assertWithinMaxBytes(loaded, maxBytes);
+    await writeChunk(writeStream, value);
+    onProgress?.({ loaded: responseLoaded, total });
+  }
+
+  onProgress?.({ loaded: responseLoaded, total: total || responseLoaded });
+  return loaded;
+}
+
+function assertWithinMaxBytes(size, maxBytes = 0) {
+  const limit = Number(maxBytes || 0);
+  if (limit > 0 && Number(size || 0) > limit) {
+    throw new AppError(Err.TELEGRAM_API_ERROR, `Video exceeds Telegram's ${formatMegabytes(limit)} MB upload limit.`);
+  }
+}
+
+function formatMegabytes(bytes) {
+  return Math.round(Number(bytes || 0) / 1024 / 1024);
 }
 
 /** Fetch a URL and return its response body as text. */
