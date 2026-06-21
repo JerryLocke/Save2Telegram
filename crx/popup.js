@@ -40,6 +40,13 @@
     endpointKey: ""
   };
   const ALLOWED_COMPLETED_RECORD_COUNTS = [5, 10, 30];
+  const ICONS = {
+    dragHandle: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="5" cy="4" r="1"/><circle cx="11" cy="4" r="1"/><circle cx="5" cy="8" r="1"/><circle cx="11" cy="8" r="1"/><circle cx="5" cy="12" r="1"/><circle cx="11" cy="12" r="1"/></svg>',
+    send: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 2.5 7 9"/><path d="m13.5 2.5-3.6 11-3-4.6-4.4-2.8 11-3.6Z"/></svg>',
+    retry: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 7a5 5 0 1 0-1.5 3.6"/><path d="M13 3.5V7h-3.5"/></svg>',
+    close: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5 11.5 11.5"/><path d="M11.5 4.5 4.5 11.5"/></svg>',
+    error: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.6"/><line x1="8" y1="4.5" x2="8" y2="9"/><circle cx="8" cy="11.5" r="0.7" fill="currentColor" stroke="none"/></svg>'
+  };
 
   let configs = [];
   let currentQueue = [];
@@ -330,12 +337,12 @@
   });
   queueList.addEventListener("scroll", syncQueueTooltipAnchors);
   queueList.addEventListener("mouseover", (event) => {
-    if (event.target instanceof Element && event.target.closest(".queue-error-trigger")) {
+    if (event.target instanceof Element && event.target.closest(".queue-error-tooltip-target")) {
       syncQueueTooltipAnchors();
     }
   });
   queueList.addEventListener("focusin", (event) => {
-    if (event.target instanceof Element && event.target.closest(".queue-error-trigger")) {
+    if (event.target instanceof Element && event.target.closest(".queue-error-tooltip-target")) {
       syncQueueTooltipAnchors();
     }
   });
@@ -638,7 +645,7 @@
     dragHandle.className = "config-item-drag";
     dragHandle.draggable = true;
     dragHandle.setAttribute("aria-hidden", "true");
-    dragHandle.innerHTML = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="5" cy="4" r="1"/><circle cx="11" cy="4" r="1"/><circle cx="5" cy="8" r="1"/><circle cx="11" cy="8" r="1"/><circle cx="5" cy="12" r="1"/><circle cx="11" cy="12" r="1"/></svg>';
+    dragHandle.innerHTML = ICONS.dragHandle;
 
 
     const main = document.createElement("div");
@@ -656,7 +663,7 @@
 
     const deleteBtn = document.createElement("span");
     deleteBtn.className = "config-item-delete";
-    deleteBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>';
+    deleteBtn.innerHTML = ICONS.close;
     deleteBtn.setAttribute("aria-label", Save2TG.I18n.t("popup_delete"));
     deleteBtn.dataset.action = "delete-config";
     deleteBtn.dataset.configId = config.id;
@@ -1093,21 +1100,18 @@
     subLine2.textContent = getDraftMediaSummary(draft);
     main.append(title, subLine1, subLine2);
 
-    const sendBtn = document.createElement("button");
-    sendBtn.type = "button";
-    sendBtn.className = "queue-action-button queue-draft-send";
-    sendBtn.dataset.action = "send-draft";
-    sendBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 2.5 7 9"/><path d="m13.5 2.5-3.6 11-3-4.6-4.4-2.8 11-3.6Z"/></svg>';
-    sendBtn.title = Save2TG.I18n.t("popup_sendDraft");
-    sendBtn.setAttribute("aria-label", Save2TG.I18n.t("popup_sendDraft"));
-
-    const clearBtn = document.createElement("button");
-    clearBtn.type = "button";
-    clearBtn.className = "queue-action-button queue-item-delete draft-clear";
-    clearBtn.dataset.action = "clear-draft";
-    clearBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5 11.5 11.5"/><path d="M11.5 4.5 4.5 11.5"/></svg>';
-    clearBtn.title = Save2TG.I18n.t("popup_clearDraft");
-    clearBtn.setAttribute("aria-label", Save2TG.I18n.t("popup_clearDraft"));
+    const sendBtn = createQueueActionButton({
+      action: "send-draft",
+      className: "queue-draft-send",
+      icon: ICONS.send,
+      label: Save2TG.I18n.t("popup_sendDraft")
+    });
+    const clearBtn = createQueueActionButton({
+      action: "clear-draft",
+      className: "queue-item-delete draft-clear",
+      icon: ICONS.close,
+      label: Save2TG.I18n.t("popup_clearDraft")
+    });
 
     const status = createQueueStatusElement({
       mode: "text",
@@ -1157,6 +1161,7 @@
     article.dataset.id = item.id;
     article.dataset.structureSignature = getQueueStructureSignature(item);
     article.className = `queue-item status-${item.status || "pending"} phase-${item.phase || "pending"}`;
+    syncQueueItemTooltipTarget(article, item);
     article.style.setProperty("--progress", `${getProgress(item)}%`);
 
     const icon = createMediaIcon(item);
@@ -1184,10 +1189,10 @@
 
     const status = createQueueStatusElement({
       mode: getQueueStatusMode(item),
-      label: getPhaseLabel(item),
       percent: `${getProgress(item)}%`,
       actions: getQueueStatusActions(item)
     });
+    renderQueueStatusPhase(status.querySelector(".queue-phase"), item);
 
     article.append(icon, main, status);
     return article;
@@ -1196,6 +1201,7 @@
   /** Update an existing queue item DOM element with new data. */
   function updateQueueItem(article, item) {
     article.className = `queue-item status-${item.status || "pending"} phase-${item.phase || "pending"}`;
+    syncQueueItemTooltipTarget(article, item);
     article.style.setProperty("--progress", `${getProgress(item)}%`);
 
     const status = article.querySelector(".queue-status");
@@ -1205,7 +1211,7 @@
 
     const phase = article.querySelector(".queue-phase");
     if (phase) {
-      phase.textContent = getPhaseLabel(item);
+      renderQueueStatusPhase(phase, item);
     }
 
     const percent = article.querySelector(".queue-percent");
@@ -1230,7 +1236,11 @@
 
     const phase = document.createElement("span");
     phase.className = "queue-phase";
-    phase.textContent = label;
+    if (label instanceof Node) {
+      phase.append(label);
+    } else {
+      phase.textContent = label;
+    }
 
     const infoBottom = document.createElement("div");
     infoBottom.className = "queue-info-bottom";
@@ -1253,17 +1263,23 @@
     ].filter(Boolean).join(" ");
   }
 
-  // Right-side queue status is limited to four modes: text, progress, actions, empty.
+  // Right-side queue status has two display modes; action-count classes only tune button layout.
   function getQueueStatusMode(item) {
-    if (item.status === "error") {
-      return "actions";
-    }
-
-    if (item.status === "sent") {
-      return "empty";
-    }
-
     return shouldShowQueuePercent(item) ? "progress" : "text";
+  }
+
+  function renderQueueStatusPhase(phase, item) {
+    if (!phase) {
+      return;
+    }
+
+    phase.replaceChildren();
+    if (item.status === "error") {
+      phase.append(createQueueErrorTrigger(item));
+      return;
+    }
+
+    phase.textContent = getPhaseLabel(item);
   }
 
   function getQueueStatusActionCount(item) {
@@ -1277,24 +1293,59 @@
   }
 
   function createQueueRetryButton(item) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "queue-action-button retry-inline";
-    button.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 7a5 5 0 1 0-1.5 3.6"/><path d="M13 3.5V7h-3.5"/></svg>';
-    button.dataset.action = "retry";
-    button.dataset.id = item.id;
-    button.title = Save2TG.I18n.t("popup_retry");
-    button.setAttribute("aria-label", Save2TG.I18n.t("popup_retry"));
-    return button;
+    return createQueueActionButton({
+      action: "retry",
+      id: item.id,
+      className: "retry-inline",
+      icon: ICONS.retry,
+      label: Save2TG.I18n.t("popup_retry")
+    });
+  }
+
+  function createQueueErrorTrigger(item) {
+    const errTrigger = document.createElement("span");
+    errTrigger.className = "queue-error-trigger";
+    errTrigger.setAttribute("data-tooltip", item.lastError || Save2TG.I18n.t("popup_failed"));
+    errTrigger.setAttribute("tabindex", "0");
+    errTrigger.setAttribute("aria-label", item.lastError || Save2TG.I18n.t("popup_failed"));
+
+    const errIcon = document.createElement("span");
+    errIcon.className = "queue-error-icon";
+    errIcon.innerHTML = ICONS.error;
+
+    const errLabel = document.createElement("span");
+    errLabel.className = "queue-error-label";
+    errLabel.textContent = Save2TG.I18n.t("popup_failed");
+
+    errTrigger.append(errIcon, errLabel);
+    return errTrigger;
+  }
+
+  function syncQueueItemTooltipTarget(article, item) {
+    const errorText = item.status === "error" ? String(item.lastError || "").trim() : "";
+    article.classList.toggle("queue-error-tooltip-target", Boolean(errorText));
+    if (errorText) {
+      article.dataset.tooltip = errorText;
+      return;
+    }
+
+    delete article.dataset.tooltip;
+    article.style.removeProperty("--queue-tooltip-left");
+    article.style.removeProperty("--queue-tooltip-top");
+    article.style.removeProperty("--queue-tooltip-arrow-left");
+    article.style.removeProperty("--queue-tooltip-width");
+    article.style.removeProperty("--queue-tooltip-max-width");
   }
 
   /** Create a remove/delete button for a queue item. */
   function createQueueRemoveButton(item) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "queue-action-button queue-item-delete";
-    button.dataset.action = "remove";
-    button.dataset.id = item.id;
+    const button = createQueueActionButton({
+      action: "remove",
+      id: item.id,
+      className: "queue-item-delete",
+      icon: ICONS.close,
+      label: ""
+    });
     updateQueueRemoveButton(button, item);
     return button;
   }
@@ -1302,9 +1353,24 @@
   function updateQueueRemoveButton(button, item) {
     const isSent = item.status === "sent";
     button.dataset.action = isSent ? "remove" : "cancel";
-    button.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5 11.5 11.5"/><path d="M11.5 4.5 4.5 11.5"/></svg>';
     button.title = isSent ? Save2TG.I18n.t("popup_delete") : Save2TG.I18n.t("popup_cancel");
     button.setAttribute("aria-label", isSent ? Save2TG.I18n.t("popup_delete") : Save2TG.I18n.t("popup_cancel"));
+  }
+
+  function createQueueActionButton({ action, id = "", className = "", icon, label }) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = ["queue-action-button", className].filter(Boolean).join(" ");
+    button.dataset.action = action;
+    if (id) {
+      button.dataset.id = id;
+    }
+    button.innerHTML = icon;
+    if (label) {
+      button.title = label;
+      button.setAttribute("aria-label", label);
+    }
+    return button;
   }
 
   /** Render the second sub-line of a queue item (phase/time/error details). */
@@ -1320,39 +1386,6 @@
       element.append(document.createTextNode(details.join(" · ")));
     }
 
-    if (item.status === "error" && item.lastError) {
-      if (details.length) {
-        element.append(document.createTextNode(" "));
-      }
-
-      const errTrigger = document.createElement("span");
-      errTrigger.className = "queue-error-trigger";
-      errTrigger.setAttribute("data-tooltip", item.lastError);
-      errTrigger.setAttribute("tabindex", "0");
-      errTrigger.setAttribute("aria-label", item.lastError);
-
-      const errIcon = document.createElement("span");
-      errIcon.className = "queue-error-icon";
-      errIcon.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.6"/><line x1="8" y1="4.5" x2="8" y2="9"/><circle cx="8" cy="11.5" r="0.7" fill="currentColor" stroke="none"/></svg>';
-
-      const errLabel = document.createElement("span");
-      errLabel.className = "queue-error-label";
-      errLabel.textContent = Save2TG.I18n.t("popup_failed");
-
-      errTrigger.append(errIcon, errLabel);
-      element.append(errTrigger);
-    }
-
-    if (item.status === "sent") {
-      if (details.length) {
-        element.append(document.createTextNode(" "));
-      }
-
-      const doneLabel = document.createElement("span");
-      doneLabel.className = "queue-done-label";
-      doneLabel.textContent = Save2TG.I18n.t("popup_done");
-      element.append(doneLabel);
-    }
   }
 
   /* Recalculate tooltip anchor positions for error-state items.
@@ -1369,7 +1402,7 @@
    *   - goToQueuePage()     (rAF, after transform change)
    *   - window resize       (direct)
    *   - queueList scroll    (direct)
-   *   - mouseover / focusin on .queue-error-trigger (direct) */
+   *   - mouseover / focusin on .queue-error-tooltip-target (direct) */
   function syncQueueTooltipAnchors() {
     const track = queueList.querySelector(".queue-track");
     if (!track) return;
@@ -1379,19 +1412,25 @@
     const gutter = parseFloat(bodyStyles.getPropertyValue("--tooltip-popup-gutter")) || 14;
     const arrowSize = parseFloat(bodyStyles.getPropertyValue("--tooltip-arrow-size")) || 6;
     const arrowHalfWidth = parseFloat(bodyStyles.getPropertyValue("--tooltip-arrow-half-width")) || 5;
-    const arrowOverlap = 1;
     const minViewportLeft = gutter;
     const maxViewportRight = popupWidth - gutter;
 
-    document.querySelectorAll(".queue-error-trigger").forEach((trigger) => {
-      const triggerRect = trigger.getBoundingClientRect();
+    document.querySelectorAll(".queue-error-tooltip-target").forEach((target) => {
+      const targetStyles = getComputedStyle(target);
+      const arrowOverlap = parseFloat(targetStyles.getPropertyValue("--queue-tooltip-arrow-overlap")) || 2;
+      const triggerGap = parseFloat(targetStyles.getPropertyValue("--queue-tooltip-trigger-gap")) || 4;
+      const marker = target.querySelector(".queue-error-trigger");
+      const iconRect = marker?.querySelector(".queue-error-icon")?.getBoundingClientRect();
+      const markerRect = iconRect?.width ? iconRect : marker?.getBoundingClientRect();
+      const fallbackRect = target.querySelector(".queue-status")?.getBoundingClientRect() || target.getBoundingClientRect();
+      const triggerRect = markerRect?.width ? markerRect : fallbackRect;
       if (!triggerRect.width) return;
 
       // Visual styling stays in CSS pseudo-elements. JS only supplies
       // geometry because .queue-track is transformed for pagination, making
       // position:fixed descendants track-relative instead of viewport-relative.
       const triggerCenterX = triggerRect.left + triggerRect.width / 2;
-      const tooltipText = trigger.getAttribute("data-tooltip") || "";
+      const tooltipText = target.getAttribute("data-tooltip") || "";
       const maxWidth = Math.min(276, Math.max(120, maxViewportRight - minViewportLeft));
       const tooltipWidth = measureQueueTooltipWidth(tooltipText, maxWidth);
 
@@ -1401,9 +1440,9 @@
         Math.max(minViewportLeft, centeredLeft)
       );
 
-      // Bubble bottom sits just above the trigger; the arrow starts 1px above
-      // that bottom edge so the triangle touches the bubble with no gap.
-      const tooltipBottom = triggerRect.top - arrowSize + arrowOverlap;
+      // Vertical tuning stays in CSS: triggerGap is the distance from the
+      // arrow tip to the error icon; arrowOverlap keeps the bubble connected.
+      const tooltipBottom = triggerRect.top - triggerGap - arrowSize + arrowOverlap;
       const left = viewportLeft - trackRect.left;
       const top = tooltipBottom - trackRect.top;
       const arrowLeft = Math.min(
@@ -1411,11 +1450,11 @@
         Math.max(viewportLeft + arrowHalfWidth, triggerCenterX)
       ) - trackRect.left;
 
-      trigger.style.setProperty("--queue-tooltip-left", `${left.toFixed(1)}px`);
-      trigger.style.setProperty("--queue-tooltip-top", `${top.toFixed(1)}px`);
-      trigger.style.setProperty("--queue-tooltip-arrow-left", `${arrowLeft.toFixed(1)}px`);
-      trigger.style.setProperty("--queue-tooltip-width", `${tooltipWidth.toFixed(1)}px`);
-      trigger.style.setProperty("--queue-tooltip-max-width", `${maxWidth.toFixed(1)}px`);
+      target.style.setProperty("--queue-tooltip-left", `${left.toFixed(1)}px`);
+      target.style.setProperty("--queue-tooltip-top", `${top.toFixed(1)}px`);
+      target.style.setProperty("--queue-tooltip-arrow-left", `${arrowLeft.toFixed(1)}px`);
+      target.style.setProperty("--queue-tooltip-width", `${tooltipWidth.toFixed(1)}px`);
+      target.style.setProperty("--queue-tooltip-max-width", `${maxWidth.toFixed(1)}px`);
 
       // Keep the tooltip as CSS pseudo-elements; no body-level float is used.
     });
@@ -1609,8 +1648,8 @@
     const labels = {
       pending: Save2TG.I18n.t("popup_phasePending"),
       sending: Save2TG.I18n.t("popup_phaseSending"),
-      error: "",
-      sent: ""
+      error: Save2TG.I18n.t("popup_failed"),
+      sent: Save2TG.I18n.t("popup_done")
     };
 
     if (Object.prototype.hasOwnProperty.call(labels, item.status)) {

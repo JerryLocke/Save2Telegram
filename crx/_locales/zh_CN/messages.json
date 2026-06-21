@@ -138,7 +138,7 @@
     "message": "完成"
   },
   "popup_failed": {
-    "message": "失败"
+    "message": "错误"
   },
   "popup_draftBox": {
     "message": "草稿箱"

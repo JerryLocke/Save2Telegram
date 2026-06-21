@@ -2,6 +2,10 @@
   box-sizing: border-box;
 }
 
+html {
+  background: #ffffff;
+}
+
 body {
   --tooltip-bg: #1f2329;
   --tooltip-color: #ffffff;
@@ -22,6 +26,10 @@ body {
 }
 
 main {
+  background: #ffffff;
+}
+
+#view-queue {
   background: #ffffff;
 }
 
@@ -90,6 +98,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   max-height: 300px;
+  background: #ffffff;
   /* Tooltips open upward without adding layout space. Horizontal overflow
    * stays clipped for paged slides; vertical overflow must remain visible
    * so the first failed item is not cut off or forced to open downward. */
@@ -107,6 +116,7 @@ button:disabled {
 .queue-track {
   display: flex;
   align-items: flex-start;
+  background: #ffffff;
   transition: transform 280ms cubic-bezier(0.22, 0.61, 0.36, 1);
   will-change: transform;
 }
@@ -124,12 +134,14 @@ button:disabled {
   display: flex;
   flex-direction: column;
   padding: 8px;
+  background: #ffffff;
 }
 
 .queue-draft-page {
   display: flex;
   flex-direction: column;
   padding: 8px;
+  background: #ffffff;
 }
 
 .queue-draft-page.has-queue {
@@ -145,6 +157,7 @@ button:disabled {
   justify-content: center;
   align-items: center;
   padding: 0 12px 6px;
+  background: #ffffff;
 }
 
 .queue-pagination.hidden {
@@ -431,9 +444,7 @@ button:disabled {
   min-height: 16px;
 }
 
-.queue-status--text .queue-info-bottom,
-.queue-status--actions .queue-info-bottom,
-.queue-status--empty .queue-info-bottom {
+.queue-status--text .queue-info-bottom {
   display: none;
 }
 
@@ -456,11 +467,6 @@ button:disabled {
   width: 100%;
 }
 
-.queue-status--actions .queue-phase,
-.queue-status--empty .queue-phase {
-  display: none;
-}
-
 .queue-percent {
   overflow: hidden;
   color: var(--accent-color);
@@ -472,9 +478,7 @@ button:disabled {
   line-height: 1.2;
 }
 
-.queue-status--text .queue-percent,
-.queue-status--actions .queue-percent,
-.queue-status--empty .queue-percent {
+.queue-status--text .queue-percent {
   display: none;
 }
 
@@ -552,12 +556,8 @@ button:disabled {
   --accent-color: #999999;
 }
 
-.queue-done-label {
-  display: inline-block;
-  margin-left: 5px;
+.status-sent .queue-phase {
   color: #52c41a;
-  line-height: inherit;
-  vertical-align: baseline;
 }
 
 .settings-view {
@@ -1063,18 +1063,7 @@ button:disabled {
 }
 
 .queue-error-trigger {
-  /* Failed-task tooltip contract:
-   * - Reuse the same visual tokens as the settings .info-icon tooltip.
-   * - Always open upward; first-row tooltips must not be flipped downward.
-   * - .queue-list must not add top padding/blank space for this; it clips
-   *   only horizontally and lets upward bubbles overflow vertically.
-   * - JS clamps the bubble against --tooltip-popup-gutter so it leaves
-   *   breathing room at both popup edges and never overflows horizontally.
-   * - The arrow overlaps the bubble by 1px, making the triangle and bubble
-   *   a single connected shape with no gap.
-   * - Because .queue-track is transformed for pagination, position:fixed
-   *   pseudo-elements below use track-relative coordinates from JS. */
-  --queue-tooltip-arrow-overlap: 1px;
+  /* Visual error label; the tooltip is shown by the whole failed row. */
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -1087,6 +1076,11 @@ button:disabled {
   line-height: inherit;
   cursor: help;
   outline: none;
+}
+
+.queue-error-tooltip-target {
+  --queue-tooltip-arrow-overlap: 2px;
+  --queue-tooltip-trigger-gap: 4px;
 }
 
 .queue-error-icon {
@@ -1107,6 +1101,11 @@ button:disabled {
   color: #ff4d4f;
 }
 
+.queue-phase .queue-error-trigger {
+  margin-left: 0;
+  top: 0;
+}
+
 .queue-error-label {
   display: inline-block;
   color: #ff4d4f;
@@ -1114,8 +1113,13 @@ button:disabled {
   vertical-align: baseline;
 }
 
-.queue-error-trigger::after {
-  /* NOTE: position:fixed here has .queue-track (with transform) as its
+.queue-error-tooltip-target::after {
+  /* Failed-row tooltip contract:
+   * - Reuse the same visual tokens as the settings .info-icon tooltip.
+   * - Always open upward; first-row tooltips must not be flipped downward.
+   * - JS clamps the bubble against --tooltip-popup-gutter so it leaves
+   *   breathing room at both popup edges and never overflows horizontally.
+   * - position:fixed here has .queue-track (with transform) as its
    * containing block per CSS spec. Coordinates from
    * syncQueueTooltipAnchors MUST be relative to the track's bbox, not
    * the viewport. If you change position, transform, or the containing
@@ -1145,8 +1149,8 @@ button:disabled {
   visibility: hidden;
 }
 
-.queue-error-trigger::before {
-  /* Same track-relative coordinate rule as ::after. Keep the 1px overlap
+.queue-error-tooltip-target::before {
+  /* Same track-relative coordinate rule as ::after. Keep the overlap
    * so the arrow and bubble remain connected with no gap. */
   content: "";
   position: fixed;
@@ -1164,10 +1168,10 @@ button:disabled {
   z-index: 2147483647;
 }
 
-.queue-error-trigger[data-tooltip]:not([data-tooltip=""]):hover::after,
-.queue-error-trigger[data-tooltip]:not([data-tooltip=""]):hover::before,
-.queue-error-trigger[data-tooltip]:not([data-tooltip=""]):focus-visible::after,
-.queue-error-trigger[data-tooltip]:not([data-tooltip=""]):focus-visible::before {
+.queue-error-tooltip-target[data-tooltip]:not([data-tooltip=""]):hover::after,
+.queue-error-tooltip-target[data-tooltip]:not([data-tooltip=""]):hover::before,
+.queue-error-tooltip-target[data-tooltip]:not([data-tooltip=""]):focus-within::after,
+.queue-error-tooltip-target[data-tooltip]:not([data-tooltip=""]):focus-within::before {
   opacity: 1;
   visibility: visible;
 }
