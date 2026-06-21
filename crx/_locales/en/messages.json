@@ -215,6 +215,9 @@
   "popup_backToQueue": {
     "message": "Back to queue"
   },
+  "popup_openHelp": {
+    "message": "Open help"
+  },
   "popup_addConfigTitle": {
     "message": "Add config"
   },

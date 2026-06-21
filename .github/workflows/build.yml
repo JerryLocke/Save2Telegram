@@ -25,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      publish_release_tags: ${{ steps.version.outputs.publish_release_tags }}
 
     steps:
       - name: Checkout
@@ -50,7 +51,13 @@ jobs:
             exit 1
           fi
 
+          PUBLISH_RELEASE_TAGS=false
+          if [ "$GITHUB_REF_TYPE" = "tag" ] || { [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ -n "$INPUT_VERSION" ]; }; then
+            PUBLISH_RELEASE_TAGS=true
+          fi
+
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "publish_release_tags=$PUBLISH_RELEASE_TAGS" >> "$GITHUB_OUTPUT"
 
   extension:
     name: Build extension
@@ -164,8 +171,8 @@ jobs:
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=${{ needs.prepare.outputs.version }}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.prepare.outputs.version }},enable=${{ needs.prepare.outputs.publish_release_tags == 'true' }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.publish_release_tags == 'true' }}
             type=sha,prefix=sha-
 
       - name: Log in to GHCR

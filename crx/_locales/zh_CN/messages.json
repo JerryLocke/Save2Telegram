@@ -215,6 +215,9 @@
   "popup_backToQueue": {
     "message": "返回队列"
   },
+  "popup_openHelp": {
+    "message": "打开帮助"
+  },
   "popup_addConfigTitle": {
     "message": "新增配置"
   },
