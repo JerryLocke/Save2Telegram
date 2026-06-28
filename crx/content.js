@@ -37,6 +37,7 @@
   let configCache = null;
   let configCacheAt = 0;
   let draftCache = null;
+  let activeConfigMenuWrapper = null;
   const graphqlMediaCache = new Map();
 
   init();
@@ -241,7 +242,17 @@
     }
 
     wrapper.dataset.tfConfigMenuBound = "true";
-    button.addEventListener("click", (event) => handleForwardClick(event, wrapper, button));
+    ["pointerdown", "mousedown", "mouseup"].forEach((type) => {
+      button.addEventListener(type, stopForwardInteractionEvent);
+    });
+    button.addEventListener("click", (event) => {
+      stopForwardInteractionEvent(event);
+      handleForwardClick(event, wrapper, button);
+    });
+    button.addEventListener("contextmenu", (event) => {
+      stopForwardInteractionEvent(event);
+      handleForwardClick(event, wrapper, button);
+    });
     button.addEventListener("mouseenter", () => {
       if (isBatchForwardMode()) {
         hideConfigMenu(wrapper);
@@ -263,6 +274,10 @@
         // ==================== Forward Action ====================
       }, 0);
     });
+  }
+
+  function stopForwardInteractionEvent(event) {
+    event?.stopPropagation?.();
   }
 
   function needsMediaFooter() {
@@ -288,7 +303,7 @@
 
   async function handleForwardAction(event, button, configId = "", options = {}) {
     const hasDraft = getDraftMediaCount(draftCache) > 0;
-    if (event?.ctrlKey) {
+    if (isDraftModeEvent(event)) {
       if (hasDraft) {
         await sendDraftForward(button, configId, options);
       } else {
@@ -303,6 +318,10 @@
     }
 
     await sendForward(button, configId);
+  }
+
+  function isDraftModeEvent(event) {
+    return Boolean(event?.ctrlKey || event?.metaKey || event?.button === 2 || event?.type === "contextmenu");
   }
 
   /** Send the tweet payload to the extension service worker for forwarding. */
@@ -416,6 +435,9 @@
 
     const menu = ensureConfigMenu(wrapper);
     menu.replaceChildren();
+    activeConfigMenuWrapper = wrapper;
+    clearHideTimer(wrapper);
+    bindMenuHover(menu);
 
     if (!configs.length) {
       const empty = document.createElement("div");
@@ -500,9 +522,20 @@
 
   /** Hide the config menu. */
   function hideConfigMenu(wrapper) {
+    if (wrapper && activeConfigMenuWrapper && activeConfigMenuWrapper !== wrapper) {
+      clearHideTimer(wrapper);
+      return;
+    }
+
     const menu = document.querySelector(`.${MENU_CLASS}`);
     if (menu) {
       menu.hidden = true;
+    }
+    if (!wrapper || activeConfigMenuWrapper === wrapper) {
+      if (activeConfigMenuWrapper) {
+        clearHideTimer(activeConfigMenuWrapper);
+      }
+      activeConfigMenuWrapper = null;
     }
   }
 
@@ -512,20 +545,44 @@
       return;
     }
 
+    activeConfigMenuWrapper = wrapper;
     clearHideTimer(wrapper);
-    wrapper.dataset.tfHideTimer = String(window.setTimeout(() => hideConfigMenu(wrapper), 180));
-
-    bindMenuHover(menu, wrapper);
+    wrapper.dataset.tfHideTimer = String(window.setTimeout(() => hideConfigMenuIfInactive(wrapper), 180));
   }
 
-  function bindMenuHover(menu, wrapper) {
+  function hideConfigMenuIfInactive(wrapper) {
+    if (activeConfigMenuWrapper !== wrapper) {
+      clearHideTimer(wrapper);
+      return;
+    }
+
+    const menu = document.querySelector(`.${MENU_CLASS}`);
+    if (menu?.matches(":hover") || wrapper?.matches?.(":hover")) {
+      return;
+    }
+
+    hideConfigMenu(wrapper);
+  }
+
+  function bindMenuHover(menu) {
     if (menu.dataset.tfHoverBound === "true") {
       return;
     }
 
     menu.dataset.tfHoverBound = "true";
-    menu.addEventListener("mouseenter", () => clearHideTimer(wrapper));
-    menu.addEventListener("mouseleave", () => scheduleHideConfigMenu(wrapper));
+    ["pointerdown", "mousedown", "mouseup", "click"].forEach((type) => {
+      menu.addEventListener(type, stopForwardInteractionEvent);
+    });
+    menu.addEventListener("mouseenter", () => {
+      if (activeConfigMenuWrapper) {
+        clearHideTimer(activeConfigMenuWrapper);
+      }
+    });
+    menu.addEventListener("mouseleave", () => {
+      if (activeConfigMenuWrapper) {
+        scheduleHideConfigMenu(activeConfigMenuWrapper);
+      }
+    });
   }
 
   function clearHideTimer(wrapper) {
