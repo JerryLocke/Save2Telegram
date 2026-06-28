@@ -1,16 +1,44 @@
+import { AppError, Err } from "./errors.js";
+
+const JSON_BODY_MAX_BYTES = parseByteLimit(process.env.JSON_BODY_MAX_BYTES, 1024 * 1024);
+
 /** Parse the request body as JSON. Rejects on invalid JSON. */
 export async function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on("data", (chunk) => chunks.push(chunk));
+    let total = 0;
+    let rejected = false;
+
+    req.on("data", (chunk) => {
+      if (rejected) {
+        return;
+      }
+
+      total += chunk.byteLength;
+      if (total > JSON_BODY_MAX_BYTES) {
+        rejected = true;
+        reject(new AppError(Err.PAYLOAD_TOO_LARGE, `JSON request body exceeds ${formatBytes(JSON_BODY_MAX_BYTES)}.`));
+        return;
+      }
+
+      chunks.push(chunk);
+    });
     req.on("end", () => {
+      if (rejected) {
+        return;
+      }
+
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString("utf-8")));
       } catch {
-        reject(new Error("Invalid JSON body."));
+        reject(new AppError(Err.VALIDATION_FAILED, "Invalid JSON body."));
       }
     });
-    req.on("error", reject);
+    req.on("error", (error) => {
+      if (!rejected) {
+        reject(error);
+      }
+    });
   });
 }
 
@@ -63,4 +91,14 @@ export function normalizeEndpointUrl(value) {
 /** Escape HTML special characters for safe embedding. */
 export function escapeHtml(value) {
   return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+}
+
+function parseByteLimit(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function formatBytes(bytes) {
+  const megabytes = Number(bytes || 0) / 1024 / 1024;
+  return megabytes >= 1 ? `${Math.round(megabytes * 10) / 10} MB` : `${Math.round(Number(bytes || 0) / 1024)} KB`;
 }

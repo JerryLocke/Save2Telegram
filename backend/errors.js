@@ -22,5 +22,6 @@ export const Err = {
   JOB_NOT_FOUND: "JOB_NOT_FOUND",         // Forward job not found
   UNAUTHORIZED: "UNAUTHORIZED",            // Authentication required
   FORBIDDEN: "FORBIDDEN",                 // Insufficient permissions
+  PAYLOAD_TOO_LARGE: "PAYLOAD_TOO_LARGE", // Request body exceeded the configured limit
   UNKNOWN: "UNKNOWN"                       // Unclassified error
 };

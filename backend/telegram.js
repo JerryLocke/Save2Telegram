@@ -1,10 +1,13 @@
 import { AppError, Err } from "./errors.js";
 import { TELEGRAM_API_BASE } from "./config.js";
+import http from "node:http";
+import https from "node:https";
 
 const TELEGRAM_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const TELEGRAM_UPLOAD_RETRIES = Math.max(0, Number(process.env.TELEGRAM_UPLOAD_RETRIES || 2));
 const TELEGRAM_RETRY_BASE_DELAY_MS = 1200;
 const TELEGRAM_SEND_MIN_INTERVAL_MS = Math.max(0, Number(process.env.TELEGRAM_SEND_MIN_INTERVAL_MS || 1250));
+const TELEGRAM_RESPONSE_MAX_BYTES = Math.max(16 * 1024, Number(process.env.TELEGRAM_RESPONSE_MAX_BYTES || 1024 * 1024));
 const telegramSendQueuesByChat = new Map();
 const telegramLastSendAtByChat = new Map();
 const telegramRetryAfterUntilByChat = new Map();
@@ -115,16 +118,7 @@ export async function callTelegramMultipart(botToken, method, body, options = {}
           controller.abort();
         }, TELEGRAM_UPLOAD_TIMEOUT_MS);
         const multipart = createMultipartBody(body, onUploadProgress);
-        return fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {
-          method: "POST",
-          headers: {
-            "Content-Type": multipart.contentType,
-            "Content-Length": String(multipart.contentLength)
-          },
-          body: multipart.body,
-          duplex: "half",
-          signal: controller.signal
-        });
+        return sendMultipartRequest(botToken, method, multipart, controller.signal);
       });
 
       const data = await response.json().catch(() => null);
@@ -276,11 +270,23 @@ function sleepWithAbort(delay, signal) {
       return;
     }
 
-    const timeoutId = setTimeout(resolve, delay);
-    signal?.addEventListener?.("abort", () => {
-      clearTimeout(timeoutId);
+    let timeoutId = null;
+    const cleanup = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      signal?.removeEventListener?.("abort", onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
       reject(new AppError(Err.CANCELLED, "Task cancelled by user."));
-    }, { once: true });
+    };
+
+    timeoutId = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, delay);
+    signal?.addEventListener?.("abort", onAbort, { once: true });
   });
 }
 
@@ -307,6 +313,181 @@ function describeUploadError(error) {
   return code ? `${message} (${code})` : message;
 }
 
+/** POST multipart data with Node streams so large files obey socket backpressure. */
+function sendMultipartRequest(botToken, method, multipart, signal) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`);
+    const transport = url.protocol === "https:" ? https : http;
+    let settled = false;
+    let requestBodyEnded = false;
+    let responseReceived = false;
+    let request = null;
+    const stopWritingController = new AbortController();
+
+    const cleanup = () => {
+      signal?.removeEventListener?.("abort", onAbort);
+    };
+    const settle = (callback, value) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      callback(value);
+    };
+    const onAbort = () => {
+      request?.destroy(createAbortError());
+    };
+
+    request = transport.request(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": multipart.contentType,
+        "Content-Length": String(multipart.contentLength)
+      }
+    }, (response) => {
+      responseReceived = true;
+      stopWritingController.abort();
+      const chunks = [];
+      let responseBytes = 0;
+      response.on("data", (chunk) => {
+        responseBytes += chunk.byteLength;
+        if (responseBytes > TELEGRAM_RESPONSE_MAX_BYTES) {
+          settle(reject, new AppError(Err.TELEGRAM_API_ERROR, `Telegram API response exceeds ${formatBytes(TELEGRAM_RESPONSE_MAX_BYTES)}.`));
+          response.destroy();
+          request.destroy();
+          return;
+        }
+
+        chunks.push(chunk);
+      });
+      response.on("end", () => {
+        settle(resolve, createBufferedResponse(response, chunks));
+        if (!requestBodyEnded) {
+          request.destroy();
+        }
+      });
+      response.on("error", (error) => {
+        settle(reject, error);
+      });
+    });
+
+    request.on("error", (error) => {
+      if (responseReceived) {
+        return;
+      }
+      settle(reject, error);
+    });
+
+    if (signal?.aborted) {
+      request.destroy(createAbortError());
+      return;
+    }
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+
+    writeMultipartRequest(request, multipart.body, signal, stopWritingController.signal)
+      .then((bodyEnded) => {
+        requestBodyEnded = bodyEnded;
+      })
+      .catch((error) => {
+        if (!settled) {
+          request.destroy(error);
+        }
+      });
+  });
+}
+
+async function writeMultipartRequest(request, body, signal, stopSignal) {
+  for await (const chunk of body) {
+    if (stopSignal?.aborted) {
+      return false;
+    }
+
+    throwIfAbortedSignal(signal);
+    if (!request.write(chunk)) {
+      await waitForRequestDrain(request, signal, stopSignal);
+    }
+  }
+
+  if (!stopSignal?.aborted) {
+    request.end();
+    return true;
+  }
+
+  return false;
+}
+
+function waitForRequestDrain(request, signal, stopSignal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(createAbortError());
+      return;
+    }
+    if (stopSignal?.aborted) {
+      resolve();
+      return;
+    }
+
+    const cleanup = () => {
+      request.off("drain", onDrain);
+      request.off("error", onError);
+      signal?.removeEventListener?.("abort", onAbort);
+      stopSignal?.removeEventListener?.("abort", onStop);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(createAbortError());
+    };
+    const onStop = () => {
+      cleanup();
+      resolve();
+    };
+
+    request.once("drain", onDrain);
+    request.once("error", onError);
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+    stopSignal?.addEventListener?.("abort", onStop, { once: true });
+  });
+}
+
+function throwIfAbortedSignal(signal) {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+}
+
+function createAbortError() {
+  const error = new Error("This operation was aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function createBufferedResponse(response, chunks) {
+  const body = Buffer.concat(chunks).toString("utf-8");
+  return {
+    ok: response.statusCode >= 200 && response.statusCode <= 299,
+    status: response.statusCode || 0,
+    statusText: response.statusMessage || "",
+    async json() {
+      return JSON.parse(body);
+    }
+  };
+}
+
+function formatBytes(bytes) {
+  const megabytes = Number(bytes || 0) / 1024 / 1024;
+  return megabytes >= 1 ? `${Math.round(megabytes * 10) / 10} MB` : `${Math.round(Number(bytes || 0) / 1024)} KB`;
+}
+
 /** Build a multipart/form-data body from a FormData object with optional upload progress callback. */
 function createMultipartBody(form, onProgress = null) {
   const boundary = `----Save2Telegram${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
@@ -322,37 +503,34 @@ function createMultipartBody(form, onProgress = null) {
     onProgress?.({ loaded, total: contentLength });
   };
 
-  const body = new ReadableStream({
-    async start(controller) {
-      for (const part of parts) {
-        controller.enqueue(part.header);
-        report(part.header.byteLength);
-
-        if (part.file) {
-          for await (const chunk of part.file.stream()) {
-            controller.enqueue(chunk);
-            report(chunk.byteLength);
-          }
-        } else {
-          controller.enqueue(part.content);
-          report(part.content.byteLength);
-        }
-
-        controller.enqueue(part.footer);
-        report(part.footer.byteLength);
-      }
-
-      controller.enqueue(closing);
-      report(closing.byteLength);
-      controller.close();
-    }
-  });
-
   return {
-    body,
+    body: iterMultipartBody(parts, closing, report),
     contentType: `multipart/form-data; boundary=${boundary}`,
     contentLength
   };
+}
+
+async function* iterMultipartBody(parts, closing, report) {
+  for (const part of parts) {
+    yield part.header;
+    report(part.header.byteLength);
+
+    if (part.file) {
+      for await (const chunk of part.file.stream()) {
+        yield chunk;
+        report(chunk.byteLength);
+      }
+    } else {
+      yield part.content;
+      report(part.content.byteLength);
+    }
+
+    yield part.footer;
+    report(part.footer.byteLength);
+  }
+
+  yield closing;
+  report(closing.byteLength);
 }
 
 /** Create a single multipart part (header + data) for the given field. */

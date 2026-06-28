@@ -87,12 +87,21 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     context.error = error.message || String(error);
     const code = error instanceof AppError ? error.code : Err.UNKNOWN;
-    const status = code === Err.UNAUTHORIZED ? 401 : (code === Err.FORBIDDEN ? 403 : 500);
+    const status = getErrorStatus(code);
     sendJson(res, status, { ok: false, code, error: error.message || String(error) });
   } finally {
     logRequestEnd(req, context);
   }
 });
+
+function getErrorStatus(code) {
+  if (code === Err.UNAUTHORIZED) return 401;
+  if (code === Err.FORBIDDEN) return 403;
+  if (code === Err.PAYLOAD_TOO_LARGE) return 413;
+  if (code === Err.VALIDATION_FAILED) return 400;
+  return 500;
+}
+
 // Remove temp upload files that may have survived a hard process/container kill.
 try {
   const cleanedUploadTempDirs = await cleanupStaleUploadFiles();

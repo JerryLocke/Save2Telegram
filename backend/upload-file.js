@@ -1,4 +1,3 @@
-import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -48,22 +47,14 @@ export async function writeChunk(writeStream, chunk) {
     return;
   }
 
-  await Promise.race([
-    once(writeStream, "drain"),
-    once(writeStream, "error").then(([error]) => {
-      throw error;
-    })
-  ]);
+  await waitForWriteStreamEvent(writeStream, "drain");
 }
 
 /** Finish a Node write stream and surface any write errors. */
 export async function finishWriteStream(writeStream) {
-  const finished = once(writeStream, "finish");
-  const failed = once(writeStream, "error").then(([error]) => {
-    throw error;
-  });
+  const finished = waitForWriteStreamEvent(writeStream, "finish");
   writeStream.end();
-  await Promise.race([finished, failed]);
+  await finished;
 }
 
 /** Return the byte size of either a disk-backed upload file or a Blob wrapper. */
@@ -128,4 +119,24 @@ function sanitizeFilename(value) {
     .replace(/[<>:"/\\|?*\x00-\x1F]+/g, "_")
     .replace(/^\.+$/, "")
     .slice(0, 120);
+}
+
+function waitForWriteStreamEvent(writeStream, eventName) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      writeStream.off(eventName, onEvent);
+      writeStream.off("error", onError);
+    };
+    const onEvent = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+
+    writeStream.once(eventName, onEvent);
+    writeStream.once("error", onError);
+  });
 }

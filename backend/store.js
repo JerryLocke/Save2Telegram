@@ -24,17 +24,48 @@ async function readJsonFile(file, fallback) {
 
 /** Atomically write a JSON value to a file. */
 async function writeJsonFile(file, value) {
-  const previous = writeQueues.get(file) || Promise.resolve();
-  const next = previous
-    .catch(() => undefined)
-    .then(() => writeJsonFileNow(file, value));
-  const tracked = next.finally(() => {
-    if (writeQueues.get(file) === tracked) {
-      writeQueues.delete(file);
-    }
+  let state = writeQueues.get(file);
+  if (!state) {
+    state = {
+      running: false,
+      pendingValue: undefined,
+      pendingWaiters: []
+    };
+    writeQueues.set(file, state);
+  }
+
+  const result = new Promise((resolve, reject) => {
+    state.pendingValue = value;
+    state.pendingWaiters.push({ resolve, reject });
   });
-  writeQueues.set(file, tracked);
-  return next;
+
+  if (!state.running) {
+    state.running = true;
+    drainJsonFileWrites(file, state);
+  }
+
+  return result;
+}
+
+async function drainJsonFileWrites(file, state) {
+  while (state.pendingWaiters.length) {
+    const value = state.pendingValue;
+    const waiters = state.pendingWaiters;
+    state.pendingValue = undefined;
+    state.pendingWaiters = [];
+
+    try {
+      await writeJsonFileNow(file, value);
+      waiters.forEach(({ resolve }) => resolve());
+    } catch (error) {
+      waiters.forEach(({ reject }) => reject(error));
+    }
+  }
+
+  state.running = false;
+  if (writeQueues.get(file) === state) {
+    writeQueues.delete(file);
+  }
 }
 
 async function writeJsonFileNow(file, value) {

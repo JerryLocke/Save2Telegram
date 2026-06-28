@@ -10,7 +10,10 @@
     "48": "icons/icon_48.png",
     "128": "icons/icon_128.png"
   },
-  "permissions": ["storage", "webRequest"],
+  "permissions": [
+    "storage",
+    "webRequest"
+  ],
   "host_permissions": [
     "https://api.telegram.org/*",
     "https://twitter.com/*",
@@ -34,16 +37,39 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://twitter.com/*", "https://x.com/*"],
-      "js": ["content.js"],
-      "css": ["content.css"],
+      "matches": [
+        "https://twitter.com/*",
+        "https://x.com/*"
+      ],
+      "js": [
+        "content/state.js",
+        "content/lifecycle.js",
+        "content/buttons.js",
+        "content/forward-actions.js",
+        "content/config-menu.js",
+        "content/data.js",
+        "content/mounts.js",
+        "content/payload.js",
+        "content/graphql.js",
+        "content/tweet-dom.js",
+        "content/utils.js",
+        "content/bootstrap.js"
+      ],
+      "css": [
+        "content/content.css"
+      ],
       "run_at": "document_start"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["page-graphql-capture.js"],
-      "matches": ["https://twitter.com/*", "https://x.com/*"]
+      "resources": [
+        "content/page-graphql-capture.js"
+      ],
+      "matches": [
+        "https://twitter.com/*",
+        "https://x.com/*"
+      ]
     }
   ],
   "action": {
@@ -54,6 +80,6 @@
       "48": "icons/icon_48.png",
       "128": "icons/icon_128.png"
     },
-    "default_popup": "popup.html"
+    "default_popup": "popup/index.html"
   }
 }
