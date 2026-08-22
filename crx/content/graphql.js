@@ -102,8 +102,7 @@ async function hydrateTweetPayloadMediaFromGraphql(payload) {
   }
 
   try {
-    const cachedMediaItems = getCachedGraphqlMediaItems(tweetId);
-    const mediaItems = cachedMediaItems.length ? cachedMediaItems : await fetchGraphqlTweetMediaItems(tweetId);
+    const mediaItems = await resolveGraphqlTweetMediaItems(tweetId);
     if (!mediaItems.length) {
       return payload;
     }
@@ -118,6 +117,103 @@ async function hydrateTweetPayloadMediaFromGraphql(payload) {
   } catch {
     return payload;
   }
+}
+
+async function resolveGraphqlTweetMediaItems(tweetId) {
+  const cachedMediaItems = getCachedGraphqlMediaItems(tweetId);
+  if (cachedMediaItems.length) {
+    return cachedMediaItems;
+  }
+
+  return firstResolvedMediaItems([
+    fetchGraphqlTweetMediaItems(tweetId),
+    waitForCachedGraphqlMediaItems(tweetId, GRAPHQL_MEDIA_CACHE_WAIT_MS)
+  ]);
+}
+
+function firstResolvedMediaItems(promises) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let remaining = promises.length;
+
+    const finish = (mediaItems) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      resolve(mediaItems);
+    };
+
+    promises.forEach((promise) => {
+      Promise.resolve(promise)
+        .then((mediaItems) => {
+          if (Array.isArray(mediaItems) && mediaItems.length) {
+            finish(mediaItems);
+            return;
+          }
+
+          remaining -= 1;
+          if (remaining === 0) {
+            finish([]);
+          }
+        })
+        .catch(() => {
+          remaining -= 1;
+          if (remaining === 0) {
+            finish([]);
+          }
+        });
+    });
+  });
+}
+
+function waitForCachedGraphqlMediaItems(tweetId, timeoutMs) {
+  return new Promise((resolve) => {
+    let finished = false;
+    let timeout = null;
+    let interval = null;
+
+    const finish = (mediaItems) => {
+      if (finished) {
+        return;
+      }
+
+      finished = true;
+      window.clearTimeout(timeout);
+      window.clearInterval(interval);
+      window.removeEventListener("message", handleMessage);
+      resolve(mediaItems);
+    };
+
+    const checkCache = () => {
+      const cachedMediaItems = getCachedGraphqlMediaItems(tweetId);
+      if (cachedMediaItems.length) {
+        finish(cachedMediaItems);
+        return true;
+      }
+
+      return false;
+    };
+
+    const handleMessage = (event) => {
+      if (event.source !== window ||
+        event.data?.source !== GRAPHQL_MEDIA_CACHE_MESSAGE_SOURCE ||
+        event.data?.type !== GRAPHQL_MEDIA_CACHE_MESSAGE_TYPE) {
+        return;
+      }
+
+      window.setTimeout(checkCache, 0);
+    };
+
+    if (checkCache()) {
+      return;
+    }
+
+    window.addEventListener("message", handleMessage);
+    interval = window.setInterval(checkCache, 120);
+    timeout = window.setTimeout(() => finish([]), timeoutMs);
+  });
 }
 
 async function fetchGraphqlTweetMediaItems(tweetId) {

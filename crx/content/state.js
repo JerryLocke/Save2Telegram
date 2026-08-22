@@ -20,6 +20,7 @@ const MESSAGE_DRAFT_REMOVED = function (count) { return chrome.i18n.getMessage("
 const MESSAGE_DRAFT_QUEUED = function () { return chrome.i18n.getMessage("content_draftQueued"); };
 const MESSAGE_NO_MEDIA = function () { return chrome.i18n.getMessage("content_noMedia"); };
 const MESSAGE_NO_DOWNLOADABLE_VIDEO = function () { return chrome.i18n.getMessage("content_noDownloadableVideo"); };
+const GRAPHQL_MEDIA_CACHE_WAIT_MS = 1200;
 const ICON_READY = `
 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
   <path d="M21.7 3.3a1.1 1.1 0 0 0-1.2-.2L3 10.1a1.1 1.1 0 0 0 .1 2.1l4.8 1.5 1.8 5.7a1.1 1.1 0 0 0 2 .2l2.7-4.1 4.9 3.6a1.1 1.1 0 0 0 1.7-.7l1.1-14a1.1 1.1 0 0 0-.4-1.1Zm-4.2 4.4-8.2 7.1-.7-2.3 8.9-4.8Z"/>

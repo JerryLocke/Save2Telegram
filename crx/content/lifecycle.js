@@ -1,3 +1,17 @@
+const RENDER_RELEVANT_MUTATION_SELECTOR = [
+  "article",
+  '[role="group"]',
+  '[data-testid="reply"]',
+  '[data-testid="retweet"]',
+  '[data-testid="like"]',
+  '[data-testid="bookmark"]',
+  '[data-testid="share"]',
+  'button[aria-label*="Share"]',
+  '[role="button"][aria-label*="Share"]',
+  'button[aria-label*="\u5206\u4eab"]',
+  '[role="button"][aria-label*="\u5206\u4eab"]'
+].join(",");
+
 // ==================== Initialization ====================
 /** Initialize content script: mount forward buttons on tweets and media viewer. */
 function init() {
@@ -7,6 +21,7 @@ function init() {
   queueRenderBurst();
   patchHistoryNavigation();
   observeTweetResources();
+  observeTimelineMutations();
   document.addEventListener("click", handlePotentialMediaClick, true);
   window.addEventListener("popstate", handleUrlMaybeChanged);
   window.addEventListener("pageshow", queueRenderBurst);
@@ -103,6 +118,73 @@ function observeTweetResources() {
   } catch {
     observer.observe({ entryTypes: ["resource"] });
   }
+}
+
+/** Watch X's virtualized timelines for streamed-in tweets and action rows. */
+function observeTimelineMutations() {
+  if (!("MutationObserver" in window)) {
+    return;
+  }
+
+  let mutationRenderTimer = null;
+  let lastMutationRenderAt = 0;
+
+  const scheduleMutationRender = () => {
+    if (mutationRenderTimer) {
+      return;
+    }
+
+    const elapsed = Date.now() - lastMutationRenderAt;
+    const delay = Math.max(160, 500 - elapsed);
+    mutationRenderTimer = window.setTimeout(() => {
+      mutationRenderTimer = null;
+      lastMutationRenderAt = Date.now();
+      queueRender();
+    }, delay);
+  };
+
+  const observer = new MutationObserver((mutations) => {
+    if (mutations.some(isTimelineRenderMutation)) {
+      scheduleMutationRender();
+    }
+  });
+
+  const start = () => {
+    const root = document.documentElement;
+    if (!root) {
+      document.addEventListener("DOMContentLoaded", start, { once: true });
+      return;
+    }
+
+    observer.observe(root, {
+      attributes: true,
+      attributeFilter: ["aria-label", "data-testid", "href", "role"],
+      childList: true,
+      subtree: true
+    });
+  };
+
+  start();
+}
+
+function isTimelineRenderMutation(mutation) {
+  if (mutation.type === "attributes") {
+    return isRenderRelevantElement(mutation.target);
+  }
+
+  return Array.from(mutation.addedNodes).some(isRenderRelevantNode) ||
+    Array.from(mutation.removedNodes).some(isRenderRelevantNode);
+}
+
+function isRenderRelevantNode(node) {
+  return node instanceof Element && isRenderRelevantElement(node);
+}
+
+function isRenderRelevantElement(element) {
+  return element instanceof Element && (
+    element.matches(RENDER_RELEVANT_MUTATION_SELECTOR) ||
+    Boolean(element.querySelector(RENDER_RELEVANT_MUTATION_SELECTOR))
+  );
 }
 
 /** Check if a URL is a tweet-related resource that warrants a re-render. */

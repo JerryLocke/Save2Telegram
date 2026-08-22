@@ -15,6 +15,7 @@ async function showConfigMenu(wrapper, button, options = {}) {
   activeConfigMenuWrapper = wrapper;
   clearHideTimer(wrapper);
   bindMenuHover(menu);
+  bindMenuContextMenu(menu);
 
   if (!configs.length) {
     const empty = document.createElement("div");
@@ -73,14 +74,13 @@ function createConfigMenuItem(config, button, wrapper, isRecent = false) {
   }
 
   item.addEventListener("click", (event) => handleConfigMenuItemSelect(event, config, button, wrapper));
-  item.addEventListener("contextmenu", (event) => handleConfigMenuItemSelect(event, config, button, wrapper));
+  item.addEventListener("contextmenu", (event) => handleConfigMenuItemSelect(event, config, button, wrapper), true);
 
   return item;
 }
 
 async function handleConfigMenuItemSelect(event, config, button, wrapper) {
-  event.preventDefault();
-  event.stopPropagation();
+  cancelForwardInteractionEvent(event);
   hideConfigMenu(wrapper);
   await handleForwardAction(event, button, config.id, { preferConfig: true });
 }
@@ -153,10 +153,6 @@ function bindMenuHover(menu) {
   ["pointerdown", "mousedown", "mouseup", "click"].forEach((type) => {
     menu.addEventListener(type, stopForwardInteractionEvent);
   });
-  menu.addEventListener("contextmenu", (event) => {
-    event.preventDefault();
-    stopForwardInteractionEvent(event);
-  });
   menu.addEventListener("mouseenter", () => {
     if (activeConfigMenuWrapper) {
       clearHideTimer(activeConfigMenuWrapper);
@@ -167,6 +163,16 @@ function bindMenuHover(menu) {
       scheduleHideConfigMenu(activeConfigMenuWrapper);
     }
   });
+}
+
+function bindMenuContextMenu(menu) {
+  if (menu.dataset.tfContextMenuBound === "true") {
+    return;
+  }
+
+  menu.dataset.tfContextMenuBound = "true";
+  menu.addEventListener("contextmenu", preventNativeContextMenu, true);
+  menu.addEventListener("contextmenu", cancelForwardInteractionEvent);
 }
 
 function clearHideTimer(wrapper) {

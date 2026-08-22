@@ -13,9 +13,9 @@ function bindButtonInteractions(wrapper, button) {
     handleForwardClick(event, wrapper, button);
   });
   button.addEventListener("contextmenu", (event) => {
-    stopForwardInteractionEvent(event);
+    cancelForwardInteractionEvent(event);
     handleForwardClick(event, wrapper, button);
-  });
+  }, true);
   button.addEventListener("mouseenter", () => {
     if (isBatchForwardMode()) {
       hideConfigMenu(wrapper);
@@ -41,6 +41,16 @@ function bindButtonInteractions(wrapper, button) {
 
 function stopForwardInteractionEvent(event) {
   event?.stopPropagation?.();
+}
+
+function preventNativeContextMenu(event) {
+  event?.preventDefault?.();
+}
+
+function cancelForwardInteractionEvent(event) {
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+  event?.stopImmediatePropagation?.();
 }
 
 function needsMediaFooter() {
