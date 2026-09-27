@@ -31,6 +31,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
     return true;
   }
+  if (message?.type === "FORWARD_TELEGRAM_MEDIA") {
+    if (message.payload?.source !== 'telegram') {
+      sendResponse({ ok: false, error: __t('bg_telegramInvalidSource') });
+      return false;
+    }
+    enqueueForward(message.payload, _sender, message.configId)
+      .then((item) => sendResponse({ ok: true, result: item }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+    return true;
+  }
   if (message?.type === "GET_FORWARD_DRAFT") {
     getPublicForwardDraft()
       .then((draft) => sendResponse({ ok: true, result: draft }))

@@ -74,6 +74,13 @@ export async function sendTelegramMessage(botToken, chatId, text, signal) {
   }, signal);
 }
 
+/** Copying preserves captions and albums but omits the native forward attribution. */
+export async function forwardTelegramMessages(botToken, chatId, source, signal, asCopy = false) {
+  return callTelegram(botToken, asCopy ? 'copyMessages' : 'forwardMessages', {
+    chat_id: chatId, from_chat_id: source.chatId, message_ids: source.messageIds
+  }, signal);
+}
+
 /** Call a Telegram Bot API JSON method. */
 async function callTelegram(botToken, method, body, signal) {
   const response = await runTelegramSendQueued(body?.chat_id, signal, () => fetch(`${TELEGRAM_API_BASE}/bot${botToken}/${method}`, {

@@ -54,20 +54,7 @@ function getDraftMediaItems(draft) {
 }
 
 function getDraftMediaSummary(draft) {
-  const mediaItems = getDraftMediaItems(draft);
-  const photoCount = mediaItems.filter((media) => media.type === "photo").length;
-  const videoCount = mediaItems.filter((media) => media.type === "video").length;
-  const parts = [];
-
-  if (videoCount) {
-    parts.push(Save2TG.I18n.t("popup_mediaVideos", [videoCount]));
-  }
-
-  if (photoCount) {
-    parts.push(Save2TG.I18n.t("popup_mediaPhotos", [photoCount]));
-  }
-
-  return parts.join(" ") || Save2TG.I18n.t("popup_mediaLink");
+  return summarizeMediaItems(getDraftMediaItems(draft));
 }
 
 function getDraftThumbnails(draft) {
@@ -91,7 +78,7 @@ function getQueueRenderSignature(item) {
     config: item.telegramConfigLabel || "",
     createdAt: item.createdAt || 0,
     media: getMediaSummary(item),
-    thumbnail: getMediaThumbnail(item)
+    thumbnails: getQueueThumbnails(item)
   };
 }
 
@@ -107,7 +94,7 @@ function getQueueStructureSignature(item) {
     config: item.telegramConfigLabel || "",
     createdAt: item.createdAt || 0,
     media: getMediaSummary(item),
-    thumbnail: getMediaThumbnail(item)
+    thumbnails: getQueueThumbnails(item)
   });
 }
 
@@ -123,7 +110,14 @@ function createMediaIcon(item) {
     icon.setAttribute("aria-label", Save2TG.I18n.t("popup_openOriginal"));
   }
 
-  const thumbnail = getMediaThumbnail(item);
+  const thumbnails = getQueueThumbnails(item);
+  if (isTelegramAlbum(item) && thumbnails.length) {
+    icon.classList.add("draft-icon");
+    icon.append(createThumbnailStack(thumbnails));
+    return icon;
+  }
+
+  const thumbnail = thumbnails[0];
   if (thumbnail) {
     const image = document.createElement("img");
     image.src = thumbnail;
@@ -132,8 +126,40 @@ function createMediaIcon(item) {
     return icon;
   }
 
-  icon.textContent = getMediaItems(item).some((media) => media.type === "video") ? "VID" : "IMG";
+  icon.textContent = item.payload?.source === 'telegram' ? 'TG' : getMediaItems(item).some((media) => media.type === "video") ? "VID" : "IMG";
   return icon;
+}
+
+/** Shared album preview used by X drafts and Telegram queue records. */
+function createThumbnailStack(thumbnails) {
+  const stack = document.createElement("span");
+  stack.className = "draft-thumb-stack";
+  ["back-left", "back-right", "front"].forEach((position, index) => {
+    const thumb = document.createElement("span");
+    thumb.className = `draft-thumb ${position}`;
+    const image = document.createElement("img");
+    image.src = thumbnails[index] || thumbnails[0];
+    image.alt = "";
+    thumb.append(image);
+    stack.append(thumb);
+  });
+  return stack;
+}
+
+function getTelegramMediaCount(item) {
+  return item.payload?.telegramSource?.messageIds?.length || getMediaItems(item).length;
+}
+
+function isTelegramAlbum(item) {
+  return item.payload?.source === "telegram" && getTelegramMediaCount(item) > 1;
+}
+
+function getQueueThumbnails(item) {
+  if (isTelegramAlbum(item)) {
+    return getMediaItems(item).map(media => media.thumbnail).filter(Boolean).slice(0, 3);
+  }
+  const thumbnail = getMediaThumbnail(item);
+  return thumbnail ? [thumbnail] : [];
 }
 
 
@@ -149,6 +175,9 @@ function renderError(message) {
 
 /** Get a human-readable label for the current phase. */
 function getPhaseLabel(item) {
+  if (item.status === 'sending' && item.phase === 'forwarding') {
+    return Save2TG.I18n.t('popup_phaseForward');
+  }
   if (item.status === "sending" && item.phase === "uploading") {
     return Save2TG.I18n.t("popup_phaseUpload");
   }
@@ -187,20 +216,21 @@ function getMediaItems(item) {
 
 /** Get a short summary of media items in the payload. */
 function getMediaSummary(item) {
-  const mediaItems = getMediaItems(item);
-  const photoCount = mediaItems.filter((media) => media.type === "photo").length;
-  const videoCount = mediaItems.filter((media) => media.type === "video").length;
+  return summarizeMediaItems(getMediaItems(item));
+}
+
+/** Keep media counts and ordering identical across drafts and queue sources. */
+function summarizeMediaItems(mediaItems) {
   const parts = [];
-
-  if (photoCount) {
-    parts.push(Save2TG.I18n.t("popup_mediaPhotos", [photoCount]));
+  for (const [type, key] of [
+    ['video', 'popup_mediaVideos'], ['photo', 'popup_mediaPhotos'],
+    ['audio', 'popup_mediaAudio'], ['document', 'popup_mediaFiles'], ['sticker', 'popup_mediaStickers']
+  ]) {
+    const count = mediaItems.filter(media => media.type === type).length;
+    if (count) parts.push(Save2TG.I18n.t(key, [count]));
   }
-
-  if (videoCount) {
-    parts.push(Save2TG.I18n.t("popup_mediaVideos", [videoCount]));
-  }
-
-  return parts.join(" ") || Save2TG.I18n.t("popup_mediaLink");
+  // Old records can lack media types; don't invent a photo/video count for them.
+  return parts.join(" ") || Save2TG.I18n.t(mediaItems.length ? "popup_media" : "popup_mediaLink");
 }
 
 /** Get the thumbnail URL for a media item. */

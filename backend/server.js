@@ -36,7 +36,7 @@ const server = http.createServer(async (req, res) => {
     }
     // GET /health - Health check
     if (req.method === "GET" && url.pathname === "/health") {
-      return sendJson(res, 200, { ok: true });
+      return sendJson(res, 200, { ok: true, capabilities: ['telegram-forward', 'telegram-copy'] });
     }
     // POST /api/keys - Create a new API key (requires setup secret)
     if (req.method === "POST" && url.pathname === "/api/keys") {

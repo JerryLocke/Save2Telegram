@@ -387,6 +387,42 @@
   "content_loadConfigFailed": {
     "message": "Failed to read Telegram configurations."
   },
+  "content_telegramUnavailable": {
+    "message": "Message unavailable. Reopen the source group or channel and try again."
+  },
+  "content_telegramMessage": {
+    "message": "Telegram media message"
+  },
+  "content_telegramQueued": {
+    "message": "Added to the Telegram forward queue. Check the extension popup for the result."
+  },
+  "bg_telegramInvalidSource": {
+    "message": "Invalid Telegram source chat or message IDs."
+  },
+  "bg_telegramSourceChanged": {
+    "message": "The source username no longer matches the selected chat. Reopen the source chat and try again."
+  },
+  "bg_telegramPartialForward": {
+    "message": "Telegram sent $1/$2 messages. Some are unavailable or unsupported. Check the destination before retrying; a retry may duplicate messages already sent."
+  },
+  "bg_telegramUpdateBackend": {
+    "message": "Update the Docker backend to a version supporting Telegram message forwarding and copying, then retry."
+  },
+  "popup_phaseForward": {
+    "message": "Forwarding"
+  },
+  "popup_media": {
+    "message": "Media"
+  },
+  "popup_mediaAudio": {
+    "message": "$1 audio"
+  },
+  "popup_mediaFiles": {
+    "message": "$1 file(s)"
+  },
+  "popup_mediaStickers": {
+    "message": "$1 sticker(s)"
+  },
   "content_unnamedConfig": {
     "message": "Unnamed config"
   }

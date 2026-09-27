@@ -386,6 +386,42 @@
   "content_loadConfigFailed": {
     "message": "读取 Telegram 配置失败。"
   },
+  "content_telegramUnavailable": {
+    "message": "消息已不可用，请重新打开来源群组或频道后重试。"
+  },
+  "content_telegramMessage": {
+    "message": "Telegram 媒体消息"
+  },
+  "content_telegramQueued": {
+    "message": "已加入 Telegram 转发队列，请在扩展弹窗中查看结果。"
+  },
+  "bg_telegramInvalidSource": {
+    "message": "Telegram 来源频道或消息 ID 无效。"
+  },
+  "bg_telegramSourceChanged": {
+    "message": "来源用户名与所选频道不一致，请重新打开来源频道后重试。"
+  },
+  "bg_telegramPartialForward": {
+    "message": "Telegram 已发送 $1/$2 条消息，其余消息不可用或不支持。请先检查目标频道，重试可能重复发送已成功的消息。"
+  },
+  "bg_telegramUpdateBackend": {
+    "message": "请先更新 Docker 后端至支持 Telegram 消息转发和复制的版本，再重试。"
+  },
+  "popup_phaseForward": {
+    "message": "转发中"
+  },
+  "popup_media": {
+    "message": "媒体"
+  },
+  "popup_mediaAudio": {
+    "message": "$1 音频"
+  },
+  "popup_mediaFiles": {
+    "message": "$1 文件"
+  },
+  "popup_mediaStickers": {
+    "message": "$1 贴纸"
+  },
   "content_unnamedConfig": {
     "message": "未命名配置"
   }

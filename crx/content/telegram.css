@@ -1,0 +1,92 @@
+#column-center .bubble-content-wrapper:has(> .bubble-content > .tf-telegram-action) {
+  --tf-beside-size: var(--message-beside-button-size, 38px);
+  --tf-beside-margin: var(--message-beside-button-margin, -46px);
+  --tf-beside-space: calc(var(--tf-beside-size) + 8px);
+  margin-right: var(--tf-beside-space);
+  max-width: calc(100% - 46px - var(--tf-beside-space));
+}
+
+#column-center .bubble-content-wrapper:has(> .bubble-content > [data-tf-native-beside="true"]) {
+  --tf-beside-space: calc(var(--tf-beside-size) + var(--tf-beside-size) + 12px);
+}
+
+.tf-forward-action.tf-telegram-action {
+  position: absolute;
+  left: calc(100% - var(--tf-beside-margin) - var(--tf-beside-size));
+  top: auto;
+  bottom: 0;
+  height: var(--tf-beside-size);
+  width: var(--tf-beside-size);
+  margin: 0 !important;
+  z-index: 2;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s ease-in-out, transform .2s ease-in-out;
+}
+
+.tf-telegram-action[data-tf-native-beside="true"] {
+  left: calc(100% - var(--tf-beside-margin) + 4px);
+}
+
+#column-center .bubble.is-out .bubble-content-wrapper:has(> .bubble-content > .tf-telegram-action) {
+  margin-right: 0;
+  margin-left: var(--tf-beside-space);
+}
+
+#column-center .bubble.is-out .tf-telegram-action {
+  left: var(--tf-beside-margin);
+}
+
+/* Outgoing native controls sit on the left. Keep ours on their right,
+   with both controls outside the message content. */
+#column-center .bubble.is-out .bubble-content:has(> [data-tf-native-beside="true"]) > :is(.bubble-beside-button.forward, .bubble-beside-button.goto-original) {
+  inset-inline-start: calc(var(--tf-beside-margin) - var(--tf-beside-size) - 4px);
+}
+
+.bubble-content.hover-reaction-visible > .tf-telegram-action {
+  transform: translateX(calc(1.125rem * var(--reflect, 1)));
+}
+
+.bubble.is-out .bubble-content.hover-reaction-visible > .tf-telegram-action {
+  transform: translateX(calc(-1.125rem * var(--reflect, 1)));
+}
+
+.bubble:hover .tf-telegram-action,
+.bubble:active .tf-telegram-action,
+.tf-telegram-action:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tf-telegram-action:focus-within { transition: none; }
+
+@media (hover: none) {
+  .tf-forward-action.tf-telegram-action { opacity: 1; pointer-events: auto; }
+}
+
+.tf-telegram-action > .tf-forward-button {
+  width: var(--tf-beside-size);
+  height: var(--tf-beside-size);
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  background: var(--message-highlighting-color, rgb(0 0 0 / 20%));
+  color: var(--badge-text-color, #fff);
+  box-shadow: none;
+}
+
+.tf-telegram-action > .tf-forward-button:hover,
+.tf-telegram-action > .tf-forward-button:focus-visible {
+  background: var(--message-highlighting-hover-color, rgb(0 0 0 / 32%));
+  color: var(--badge-text-color, #fff);
+}
+
+.tf-telegram-action > .tf-forward-button:focus-visible {
+  outline: 2px solid var(--badge-text-color, #fff);
+  outline-offset: 2px;
+}
+
+.tf-telegram-action > .tf-forward-button svg {
+  width: 1.5rem;
+  height: 1.5rem;
+}

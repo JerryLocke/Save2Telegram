@@ -3,6 +3,7 @@ import { buildCaption } from "./caption.js";
 import { TELEGRAM_API_BASE } from "./config.js";
 import { checkCancelled, updateJob } from "./jobs.js";
 import { downloadTwitterVideo } from "./twitter-video.js";
+import { forwardTelegramSource, normalizeTelegramSource } from './telegram-source.js';
 import { callTelegramMultipart, createMultipartForm, sendTelegramMessage, sendTelegramPhotoFile, sendTelegramVideoFile, validateTelegramChat } from "./telegram.js";
 import { cleanupUploadFile, cleanupUploadFiles, createTempUploadFile, createUploadFileWriteStream, finishWriteStream, getUploadFileSize, writeChunk } from "./upload-file.js";
 
@@ -36,8 +37,12 @@ class NodeForwardEndpoint extends ForwardEndpoint {
       throw new AppError(Err.MISSING_CONFIG, "Missing Telegram Bot Token or Channel ID.");
     }
 
+    if (payload?.source === 'telegram') normalizeTelegramSource(payload.telegramSource);
     updateJob(job, { phase: "validating", phaseProgress: 0, progress: 0 });
     await validateTelegramChat(botToken, chatId, signal);
+    if (payload?.source === 'telegram') {
+      return forwardTelegramSource(payload, { botToken, chatId }, job);
+    }
     const tweetUrl = payload?.tweetUrl || "";
     const caption = payload.caption || buildCaption(payload);
     const mediaItems = payload.mediaItems || getPayloadMediaItems(payload);

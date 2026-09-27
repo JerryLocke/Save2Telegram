@@ -5,6 +5,7 @@ importScripts(
   'background/forward-draft.js',
   'background/settings.js',
   'background/queue.js',
+  'background/telegram-source.js',
   'background/endpoints.js',
   'background/media.js',
   'background/telegram.js',

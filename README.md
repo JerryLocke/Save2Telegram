@@ -8,7 +8,7 @@
 
 [中文文档](README.zh-CN.md)
 
-Save2Telegram is a Chrome MV3 extension for forwarding media from X/Twitter posts to a Telegram channel through a Telegram Bot. It can run entirely inside the extension service worker, or use the optional Node.js backend to handle media download and Telegram upload outside the browser.
+Save2Telegram is a Chrome MV3 extension for forwarding media from X/Twitter posts and Telegram Web K messages to a Telegram channel through a Telegram Bot. It can run in the extension service worker or use the optional Node.js forwarding backend.
 
 ## Project Structure
 
@@ -33,6 +33,19 @@ To load the extension from source instead:
 3. Open the extension popup.
 4. Add a Telegram config with the bot token and channel ID or public `@username`.
 5. For private channels, use the numeric channel ID that starts with `-100`.
+
+## Telegram Web Media Forwarding
+
+- Supergroup/channel media messages on `https://web.telegram.org/k/` have a Save2Telegram button at the bottom, to the right of the native forward control. It uses Telegram's translucent background and white icon, appearing on message hover, keyboard focus or touch devices. One button forwards an entire album.
+- Click to use the most recently used target; hover or right-click to choose a configuration. Messages use the existing queue, separately from the X batch-media draft. Check the popup for delivery status.
+- Albums stay in one queue record and use the same stacked previews and photo/video counts as X. Forwarding captures small thumbnails from already-loaded media previews and stores them locally with the queue record. They remain available after closing or refreshing Telegram and are not sent to the backend. Files without an available preview and older records without a thumbnail retain the TG icon; older records without media types show “Media”.
+- Each record contains at most three thumbnails, each capped at 160px on its longest edge and 48KB encoded, with no separate image cache. By default they are deleted with the record after success. Enabling completed-record retention keeps the latest 5, 10 or 30 records as configured; pending and failed records remain until removed.
+- With a backend bound, the extension sends source chat/message IDs, an available source username, a copy-mode hint and the target configuration. The backend calls `forwardMessages` on `TELEGRAM_API_BASE` for ordinary messages and `copyMessages` for protected messages. Copies preserve media, captions and albums but omit native forward attribution. No media is downloaded or re-uploaded. Without a backend, it uses the public Bot API.
+- The `save2telegram-backend-botserver` entrypoint already points `TELEGRAM_API_BASE` at its embedded Bot API Server. No extra port, cache scanning or credentials are needed. `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` start the server; they are not a signed-in user session and do not expand bot access.
+- The bot must be able to access the source messages and send to the destination. Copying does not expand bot access, and unsupported message types still produce an API error. Private chats and basic groups have account-specific message IDs that cannot be reused by the bot, so no button is shown there. Telegram Web A is not supported yet.
+- Update both the extension and Docker backend, reload the extension and refresh Telegram. Older backends produce an upgrade prompt instead of accidentally sending a link-only message.
+
+API reference: [Telegram Bot API `forwardMessages`](https://core.telegram.org/bots/api#forwardmessages), [`copyMessages`](https://core.telegram.org/bots/api#copymessages). Run `npm test` in `backend/` for backend tests.
 
 ## Docker Deployment
 

@@ -342,18 +342,7 @@ function createDraftIcon(draft) {
     return icon;
   }
 
-  const stack = document.createElement("span");
-  stack.className = "draft-thumb-stack";
-  ["back-left", "back-right", "front"].forEach((position, index) => {
-    const thumb = document.createElement("span");
-    thumb.className = `draft-thumb ${position}`;
-    const image = document.createElement("img");
-    image.src = thumbnails[index] || thumbnails[0];
-    image.alt = "";
-    thumb.append(image);
-    stack.append(thumb);
-  });
-  icon.append(stack);
+  icon.append(createThumbnailStack(thumbnails));
   return icon;
 }
 

@@ -192,7 +192,7 @@ async function runQueueItem(item) {
       attempts: attempt,
       progress: 0,
       phaseProgress: 0,
-      phase: "downloading",
+      phase: entry.payload?.source === 'telegram' ? 'forwarding' : 'downloading',
       bytesLoaded: 0,
       bytesTotal: 0,
       lastError: "",

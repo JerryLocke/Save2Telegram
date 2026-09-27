@@ -66,7 +66,9 @@ class RemoteForwardEndpoint extends ForwardEndpoint {
       draftSourceKey: item.draftSourceKey || ""
     }));
     const requestBody = {
-      payload: { tweetUrl: payload.tweetUrl || "", caption, mediaItems },
+      payload: payload.source === 'telegram'
+        ? { source: 'telegram', telegramSource: normalizeTelegramSource(payload.telegramSource), tweetUrl: payload.tweetUrl || '' }
+        : { tweetUrl: payload.tweetUrl || "", caption, mediaItems },
       telegram: { botToken: config.botToken, chatId: config.chatId }
     };
     // 1) Check for existing remoteJobId (recovery after SW restart)
@@ -80,6 +82,15 @@ class RemoteForwardEndpoint extends ForwardEndpoint {
       throw new Error(`Previous job ${existingJobId} has expired. Please retry manually in the popup`);
     }
     // 2) No old job, create new SSE connection
+    if (payload.source === 'telegram') {
+      // Older backends would mistake an ID-only payload for a text message.
+      const health = await fetch(`${endpointUrl}/health`, { headers: getEndpointAuthHeaders(this.settings), signal: options.signal });
+      const data = await health.json().catch(() => null);
+      if (!health.ok || !Array.isArray(data?.capabilities) ||
+          !data.capabilities.includes('telegram-forward') || !data.capabilities.includes('telegram-copy')) {
+        throw new Error(__t('bg_telegramUpdateBackend'));
+      }
+    }
     let jobId = null;
     try {
       jobId = await this._streamWithSse(endpointUrl, requestBody, queueItemId, options.signal);
@@ -259,6 +270,9 @@ async function forwardTwitterMediaLocal(endpoint, payload, queueItemId, configId
     throw new Error(__t("bg_configureFirst"));
   }
   const configLabel = getTelegramConfigLabel(config); try { await endpoint.validateChat(botToken, chatId, signal); } catch (validateError) { throw new Error(`Channel "${configLabel}" validation failed: ${validateError.message}`); }
+  if (payload?.source === 'telegram') {
+    return forwardTelegramSource(payload, config, queueItemId, signal);
+  }
   const tweetUrl = payload?.tweetUrl || "";
   const caption = buildCaption(payload);
   const mediaItems = getPayloadMediaItems(payload);
@@ -306,6 +320,10 @@ function getPayloadMediaItems(payload) {
   return items.filter((item) => item?.type === "photo" || item?.type === "video");
 }
 function assertForwardablePayload(payload) {
+  if (payload?.source === 'telegram') {
+    normalizeTelegramSource(payload.telegramSource);
+    return;
+  }
   const mediaItems = getPayloadMediaItems(payload);
   if (!mediaItems.length) {
     throw new Error(__t("bg_noMedia"));

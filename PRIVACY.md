@@ -1,6 +1,6 @@
 # Save2Telegram Privacy Policy
 
-Save2Telegram is a Chrome extension that helps users forward media from X/Twitter posts to a Telegram channel configured by the user.
+Save2Telegram is a Chrome extension that helps users forward media from X/Twitter posts and Telegram Web K messages to a Telegram channel configured by the user.
 
 ## Data the extension uses
 
@@ -15,9 +15,13 @@ The extension may store the following data locally in the user's browser:
 
 When the user actively forwards a post, the extension may process the selected X/Twitter post URL, post text, author display information, image URLs, video URLs, and media files for the purpose of sending that content to the user's configured Telegram channel.
 
+For Telegram Web K forwarding, the extension reads source group/channel IDs, available source usernames, message IDs, media types and content-protection flags from the page. Selected message references are stored in the forwarding queue and sent to Telegram or the user's configured backend when the user clicks Forward. Up to three small thumbnails made from already-loaded page previews are stored locally with the queue record for display in the popup; they are not sent to the backend. Full Telegram media is forwarded by message reference without downloading it to the extension or backend. The extension does not read the user's Telegram login session or authentication keys.
+
+Telegram preview thumbnails have no separate cache: removing or trimming a queue record also removes its thumbnail. Successful records are removed by default, or kept up to the configured completed-record limit. Pending and failed records remain until removed.
+
 ## How data is used
 
-The data is used only to provide the extension's single purpose: forwarding user-selected X/Twitter media to a Telegram channel.
+The data is used only to provide the extension's single purpose: forwarding user-selected media to a Telegram channel.
 
 The extension does not sell user data. The extension does not use user data for advertising, credit evaluation, lending, or unrelated analytics.
 
